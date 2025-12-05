@@ -1,97 +1,69 @@
-# SF2K-UAE - Amiga 500 Emulator for SF2000
+# SF2000-UAE v073 - Amiga 500 Emulator
 
-**Version:** v0.58
-**Author:** Grzegorz Korycki (@the_q_dev on Telegram)
-**Based on:** UAE4ALL
+Amiga 500 (OCS) emulator for Data Frog SF2000 and GB300 handheld devices.
 
-Amiga 500 (OCS/ECS) emulator for the SF2000 handheld gaming device running Multicore firmware.
+Based on uae4all-rpi by Chips-fr.
 
-## Requirements
+## ⚠️ Important
 
-This emulator requires **Multicore firmware** installed on your SF2000.
+- **Only Kickstart 1.3 and 2.0 work** - Kickstart 3.0/3.1 does NOT boot
+- **OCS chipset only** - ECS and AGA games will not run correctly
+- Emulates classic Amiga 500 with 68000 CPU
 
-### Installing Multicore (quick guide)
+## Memory
 
-1. Download Multicore from [GitHub releases](https://github.com/madcock/sf2000_multicore/releases)
-2. Extract to a fresh SD card (FAT32 formatted)
-3. Copy your existing `bios/` folder to the new SD card
-4. Insert SD card and power on SF2000
-
-## Installation
-
-1. Copy `core_87000000` to: `cores/amiga/` on your SD card
-2. Place your ADF game files in: `ROMS/` folder
-3. Place Kickstart ROM files in: `bios/` folder
-
-### Required Kickstart ROMs
-
-Place at least one of these in the `bios/` folder:
-
-| Filename | Version |
-|----------|---------|
-| `kick13.rom` | Kickstart 1.3 |
-| `kick20.rom` | Kickstart 2.0 |
-| `kick30.rom` | Kickstart 3.0 |
-
-The emulator will automatically select the best available ROM.
-
-## Multi-Disk Games
-
-The emulator supports multi-disk games (up to 4 simultaneous drives).
-
-**How it works:**
-- Place all disk images for a game with the same filename prefix
-- Example: `Monkey Island (Disk 1).adf`, `Monkey Island (Disk 2).adf`, etc.
-- The emulator automatically loads disks into DF0-DF3 in alphabetical order
-- Use **Disk Shuffler** menu (START -> Disks) to rotate disks when game asks to swap
+| Type | Amount |
+|------|--------|
+| Chip RAM | 2 MB (fixed) |
+| Slow RAM | Off / 512KB / 1MB / 1.5MB |
 
 ## Controls
 
-| Button | Action |
-|--------|--------|
-| D-Pad | Joystick movement |
-| A / B | Fire button |
-| X | Jump (Up direction) |
-| START | Open menu |
-| SELECT | Toggle virtual keyboard |
-| Y | Quick disk swap |
-| L+R (hold 3 sec) | Toggle mouse mode |
+| Button | Joystick | Mouse Mode |
+|--------|----------|------------|
+| D-Pad | Directions | Mouse move |
+| B | Fire | Left Click |
+| A | Fire | Right Click |
+| L | - | Left Click |
+| R | - | Right Click |
+| SELECT | Virtual Keyboard | |
+| START | Menu | |
 
-### Menu Options
+## Kickstart ROMs
 
-- **Disks** - Disk Shuffler for multi-disk games
-- **FrogJoy1/2** - Controller assignment (Joy Port1, Joy Port0, Mouse)
-- **Frameskip** - 0-5 (higher = faster but choppier)
-- **Sound** - OFF / ON / EMUL
-- **CPU** - Timing multiplier (2 = normal)
-- **Y-Offset** - Vertical screen adjustment
-- **Floppy** - Disk speed (1x-MAX turbo)
-- **Settings** - Kickstart/RAM selection, Save Config
-- **About** - Version and credits
+Place in `bios/` folder:
 
-## Known Bugs
+| File | Version |
+|------|---------|
+| `kick13.rom` | 1.3 (34.005) |
+| `kick20.rom` | 2.0 (37.175) |
 
-- **Save states** - Loading save states does not work
-- **Per-game config** - Custom configuration per game not implemented
-- **Disk Shuffler** - May not work correctly with some multi-disk games
+⚠️ Kickstart 3.x does NOT work with this emulator.
 
-## Building from Source
+## Installation
 
-Requires MIPS MTI cross-compiler toolchain.
+1. Copy `core_87000000` to `cores/amiga/`
+2. Copy `kick13.rom` to `bios/`
+3. Copy `.adf` games to `ROMS/`
+4. Create empty stub: `amiga;GameName.adf.gba`
 
-```bash
-# In WSL/Linux
-./build.sh
-```
+## Changelog
 
-Output: `core_87000000`
+### v073
+- Slow RAM: Off/512KB/1MB/1.5MB
+- Mouse: B=LMB, A=RMB
+- Scroll arrow indicator
+- Removed broken Fast RAM
+
+### v070-v072
+- Mouse Speed 1-8
+- Delete Config
+- Settings scroll
 
 ## Credits
 
-- UAE4ALL team
-- Chips (original SF2000 port foundation)
-- Madcock (SF2000 Multicore framework)
-
-## License
-
-GPL v2 (inherited from UAE)
+- uae4all by Chui, john4p, TomB, notaz
+- Raspberry Pi port by Chips-fr
+- SF2000 multicore framework by kobily, madcock
+- SF2000/GB300 port by Grzegorz Korycki
+- Everybody at Retro Handhelds Discord

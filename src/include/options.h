@@ -27,6 +27,8 @@ extern char romfile[64];
 extern char romfile_sd[32];
 #endif
 extern unsigned prefs_chipmem_size;
+extern unsigned prefs_bogomem_size;  // v071: Slow RAM size
+extern unsigned prefs_fastmem_size;  // v072: Fast RAM size
 extern int prefs_gfx_framerate, changed_gfx_framerate;
 extern int m68k_speed;
 

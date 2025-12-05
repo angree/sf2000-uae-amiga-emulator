@@ -1,7 +1,18 @@
 /*
  * Uae4all libretro core input implementation
- * SF2K-UAE v058
+ * SF2K-UAE v073
  * (c) Chips 2021, Grzegorz Korycki 2024
+ * v073: Remove Fast RAM, expand Slow RAM to 1.5MB, A=RMB/B=LMB in mouse mode, scroll arrow
+ * v072: Fast RAM (1-4MB) implementation at 0x200000 (Zorro II area) - REMOVED
+ * v071: Slow RAM (512KB) implementation - replaces non-functional Fast RAM option
+ * v070: Mouse Speed 1-8, Delete Config, Settings scroll, START exits Settings
+ * v069: Mouse Speed option (1-5, default 2), saved per-game
+ * v068: Fix mouse from menu - add second_joystick_enable to sf2000_apply_settings()
+ * v067: Per-game config (gamename.cfg), kickstart override after default_prefs
+ * v066: Per-game config attempt (BROKEN - romfile cleared by default_prefs)
+ * v061: Direct fs_* firmware calls (bypass broken stdio), root directory config
+ * v060b: Global config in root /mnt/sda1/ (like FrogUI game_history.txt), removed fs_sync
+ * v059: Fix config save - mkdir + correct path (/mnt/sda1/cores/config/) + fs_sync()
  * v058: Menu redesign - About, Settings with Kickstart/RAM selection, per-game config
  * v057: Fix Disk Shuffler - detect 5+ disks, reset disabled mask on shuffle
  * v056: Disk Shuffler moved to first menu position for easier access
@@ -50,6 +61,27 @@ extern char romfile[64];
 extern const char *retro_system_directory;
 extern const char *retro_save_directory;
 
+// v067: Path to current ROM file (for per-game config)
+extern char RPATH[512];
+
+// v067: Flag - was config loaded with non-default kickstart?
+static int sf2000_config_loaded = 0;
+
+// v061: Direct firmware filesystem functions (bypass core's broken stdio)
+// These are linked via bisrv_08_03-core.ld linker script
+extern "C" int fs_open(const char *path, int flags, int perms);
+extern "C" ssize_t fs_write(int fd, const void *buf, size_t count);
+extern "C" ssize_t fs_read(int fd, void *buf, size_t count);
+extern "C" int fs_close(int fd);
+extern "C" int fs_sync(const char *path);
+
+// Firmware file flags (from stockfw.h)
+#define FS_O_RDONLY 0x0000
+#define FS_O_WRONLY 0x0001
+#define FS_O_RDWR   0x0002
+#define FS_O_CREAT  0x0100
+#define FS_O_TRUNC  0x0200
+
 //TIME
 #include <sys/types.h>
 #include <sys/time.h>
@@ -79,7 +111,7 @@ int sf2000_disk_shuffler_active = 0;  // v055: Disk Shuffler submenu
 int sf2000_settings_active = 0;  // v058: Settings submenu (replaces Details)
 int sf2000_about_active = 0;  // v058: About submenu
 int sf2000_settings_item = 0;  // v058: Selected item in Settings submenu
-#define SF2000_MENU_ITEMS 11  // v058: Disks,FJ1,FJ2,Skip,Sound,CPU,Y,Floppy,Settings,About,EXIT
+#define SF2000_MENU_ITEMS 12  // v069: Disks,FJ1,FJ2,MouseSpd,Skip,Sound,CPU,Y,Floppy,Settings,About,EXIT
 #define SF2000_MENU_VISIBLE 8  // v036: max visible items at once
 
 // v035: Auto CPU fix - open menu after 3 seconds, toggle CPU, close
@@ -96,12 +128,20 @@ int sf2000_frogjoy2 = 1;  // Second controller -> Port0 Joy (P2) by default
 int sf2000_y_offset = 0;
 int sf2000_v_stretch = 0;
 int sf2000_turbo_floppy = 0;
+// v070: Mouse Speed (index 0-7 = speed 1-8, default index 1 = speed 2)
+int sf2000_mouse_speed = 1;  // Default: speed 2/8
+static const int mouse_speed_table[8] = { 3, 6, 9, 12, 15, 20, 28, 40 };  // PAS values for speeds 1-8
 int sf2000_dpad_mode = 1;
-// v058: Kickstart and RAM selection (0=1.3, 1=2.0, 2=3.0)
+// v058: Kickstart selection (0=1.3, 1=2.0, 2=3.0)
 int sf2000_kickstart = 0;  // Default: Kickstart 1.3
-int sf2000_fastram = 0;    // Default: 0MB (values: 0,1,2,4,8)
-static const int fastram_values[] = {0, 1, 2, 4, 8};  // MB options
-#define SF2000_SETTINGS_ITEMS 5  // Kickstart, FastRAM, Reset, Save, Back
+// v073: Slow RAM (bogomem) - 0=off, 1=512KB, 2=1MB, 3=1.5MB
+int sf2000_slowram = 0;    // Default: 0KB
+static const unsigned int slowram_values[] = {0, 0x80000, 0x100000, 0x180000};  // 0KB, 512KB, 1MB, 1.5MB
+extern unsigned prefs_bogomem_size;  // From memory.cpp
+// v073: Settings menu items and scrolling (Fast RAM removed - didn't work)
+#define SF2000_SETTINGS_ITEMS 6  // Kickstart, SlowRAM, Reset, Save, Delete, Back
+#define SF2000_SETTINGS_VISIBLE 5  // Max visible items at once
+static int sf2000_settings_scroll = 0;  // Scroll offset for Settings menu
 
 // v058: Feedback message system
 static char sf2000_feedback_msg[64] = {0};
@@ -115,11 +155,11 @@ static const char* kickstart_files[] = {
     "kick30.rom"    // 2 = Kick 3.0
 };
 
-// v058: Check if file exists
+// v067: Check if file exists (using firmware fs_open)
 static int file_exists(const char* path) {
-    FILE* f = fopen(path, "rb");
-    if (f) {
-        fclose(f);
+    int fd = fs_open(path, FS_O_RDONLY, 0);
+    if (fd >= 0) {
+        fs_close(fd);
         return 1;
     }
     return 0;
@@ -157,60 +197,106 @@ static void update_romfile_for_kickstart(void) {
     romfile[63] = '\0';
 }
 
-// v058: Config file path (in cores/config/ folder)
+// v067: Per-game config - same folder as ROM, with .cfg extension
+// Example: /mnt/sda1/ROMS/amiga/Lotus2.adf -> /mnt/sda1/ROMS/amiga/Lotus2.cfg
 static void get_config_path(char* path, int size) {
-    // Config file: cores/config/sf2k-uae.cfg
-    snprintf(path, size, "%s/../config/sf2k-uae.cfg", retro_system_directory);
+    // Copy RPATH and replace extension with .cfg
+    strncpy(path, RPATH, size - 5);  // Leave room for .cfg\0
+    path[size - 5] = '\0';
+
+    // Find last dot
+    char* dot = strrchr(path, '.');
+    if (dot) {
+        strcpy(dot, ".cfg");
+    } else {
+        // No extension - just append .cfg
+        strncat(path, ".cfg", size - strlen(path) - 1);
+    }
 }
 
-// v058: Save configuration to file
+// v067: Save per-game config using DIRECT firmware fs_* calls
 static int sf2000_save_config(void) {
     char path[256];
     get_config_path(path, sizeof(path));
 
-    FILE* f = fopen(path, "w");
-    if (!f) return 0;
+    // v061: Use firmware fs_open directly - this is what xlog uses internally
+    int fd = fs_open(path, FS_O_WRONLY | FS_O_CREAT | FS_O_TRUNC, 0666);
+    if (fd < 0) return 0;
 
-    fprintf(f, "# SF2K-UAE Configuration\n");
-    fprintf(f, "kickstart=%d\n", sf2000_kickstart);
-    fprintf(f, "fastram=%d\n", sf2000_fastram);
-    fprintf(f, "frameskip=%d\n", sf2000_frameskip);
-    fprintf(f, "sound=%d\n", sf2000_sound_mode);
-    fprintf(f, "cpu=%d\n", sf2000_cpu_timing);
-    fprintf(f, "frogjoy1=%d\n", sf2000_frogjoy1);
-    fprintf(f, "frogjoy2=%d\n", sf2000_frogjoy2);
-    fprintf(f, "turbo_floppy=%d\n", sf2000_turbo_floppy);
-    fprintf(f, "y_offset=%d\n", sf2000_y_offset);
+    // Build config content in buffer
+    char buf[512];
+    int len = snprintf(buf, sizeof(buf),
+        "# SF2K-UAE Config v073\n"
+        "kickstart=%d\n"
+        "slowram=%d\n"
+        "frameskip=%d\n"
+        "sound=%d\n"
+        "cpu=%d\n"
+        "frogjoy1=%d\n"
+        "frogjoy2=%d\n"
+        "turbo_floppy=%d\n"
+        "y_offset=%d\n"
+        "mouse_speed=%d\n",
+        sf2000_kickstart,
+        sf2000_slowram,
+        sf2000_frameskip,
+        sf2000_sound_mode,
+        sf2000_cpu_timing,
+        sf2000_frogjoy1,
+        sf2000_frogjoy2,
+        sf2000_turbo_floppy,
+        sf2000_y_offset,
+        sf2000_mouse_speed);
 
-    fclose(f);
-    return 1;
+    // Write using firmware function
+    ssize_t written = fs_write(fd, buf, len);
+    fs_close(fd);
+
+    // Sync to ensure data is written to SD card
+    fs_sync(path);
+
+    return (written == len) ? 1 : 0;
 }
 
-// v058: Load configuration from file
+// v067: Load per-game config using DIRECT firmware fs_* calls
 static int sf2000_load_config(void) {
     char path[256];
     get_config_path(path, sizeof(path));
 
-    FILE* f = fopen(path, "r");
-    if (!f) return 0;
+    // v061: Use firmware fs_open directly
+    int fd = fs_open(path, FS_O_RDONLY, 0);
+    if (fd < 0) return 0;
 
-    char line[128];
-    while (fgets(line, sizeof(line), f)) {
-        if (line[0] == '#') continue;  // Skip comments
+    // Read entire file into buffer
+    char buf[512];
+    ssize_t bytes_read = fs_read(fd, buf, sizeof(buf) - 1);
+    fs_close(fd);
 
-        int val;
-        if (sscanf(line, "kickstart=%d", &val) == 1) sf2000_kickstart = val;
-        else if (sscanf(line, "fastram=%d", &val) == 1) sf2000_fastram = val;
-        else if (sscanf(line, "frameskip=%d", &val) == 1) sf2000_frameskip = val;
-        else if (sscanf(line, "sound=%d", &val) == 1) sf2000_sound_mode = val;
-        else if (sscanf(line, "cpu=%d", &val) == 1) sf2000_cpu_timing = val;
-        else if (sscanf(line, "frogjoy1=%d", &val) == 1) sf2000_frogjoy1 = val;
-        else if (sscanf(line, "frogjoy2=%d", &val) == 1) sf2000_frogjoy2 = val;
-        else if (sscanf(line, "turbo_floppy=%d", &val) == 1) sf2000_turbo_floppy = val;
-        else if (sscanf(line, "y_offset=%d", &val) == 1) sf2000_y_offset = val;
+    if (bytes_read <= 0) return 0;
+    buf[bytes_read] = '\0';
+
+    // Parse line by line
+    char* line = buf;
+    while (line && *line) {
+        char* next = strchr(line, '\n');
+        if (next) *next++ = '\0';
+
+        if (line[0] != '#' && line[0] != '\0') {
+            int val;
+            if (sscanf(line, "kickstart=%d", &val) == 1) sf2000_kickstart = val;
+            else if (sscanf(line, "slowram=%d", &val) == 1) sf2000_slowram = val;
+            // v073: fastram removed (didn't work), ignore old configs with fastram
+            else if (sscanf(line, "frameskip=%d", &val) == 1) sf2000_frameskip = val;
+            else if (sscanf(line, "sound=%d", &val) == 1) sf2000_sound_mode = val;
+            else if (sscanf(line, "cpu=%d", &val) == 1) sf2000_cpu_timing = val;
+            else if (sscanf(line, "frogjoy1=%d", &val) == 1) sf2000_frogjoy1 = val;
+            else if (sscanf(line, "frogjoy2=%d", &val) == 1) sf2000_frogjoy2 = val;
+            else if (sscanf(line, "turbo_floppy=%d", &val) == 1) sf2000_turbo_floppy = val;
+            else if (sscanf(line, "y_offset=%d", &val) == 1) sf2000_y_offset = val;
+            else if (sscanf(line, "mouse_speed=%d", &val) == 1) sf2000_mouse_speed = val;
+        }
+        line = next;
     }
-
-    fclose(f);
 
     // Validate loaded kickstart - make sure ROM exists
     sf2000_kickstart = find_available_kickstart(sf2000_kickstart);
@@ -228,13 +314,25 @@ static void sf2000_set_feedback(const char* msg) {
 // v058: Forward declaration for apply_settings (defined later)
 static void sf2000_apply_settings(void);
 
-// v058: Initialize config at startup (called from retro_load_game)
+// v067: Initialize config at startup (called from retro_load_game)
+// NOTE: Does NOT set romfile - that happens in sf2000_apply_kickstart_override()
+// which is called AFTER default_prefs() sets romfile to "kick.rom"
 void sf2000_init_config(void) {
+    sf2000_config_loaded = 0;  // Reset flag
     if (sf2000_load_config()) {
-        // Config loaded - update romfile to match kickstart setting
-        update_romfile_for_kickstart();
-        // v058: Apply loaded settings (frameskip, sound, cpu, floppy)
+        // Config loaded - remember kickstart setting
+        sf2000_config_loaded = 1;
+        // Apply other settings (frameskip, sound, cpu, floppy)
         sf2000_apply_settings();
+    }
+}
+
+// v067: Apply kickstart from config (call AFTER update_prefs_retrocfg sets default)
+// This is called from libretro-core.cpp after path_join sets romfile to kick13.rom
+void sf2000_apply_kickstart_override(void) {
+    // Always apply kickstart from config if config was loaded
+    if (sf2000_config_loaded) {
+        update_romfile_for_kickstart();
     }
 }
 
@@ -269,13 +367,25 @@ static retro_input_state_t input_state_cb_menu;
 #define NORMAL_FLOPPY_SPEED 1830
 static const int floppy_speed_table[5] = { 1830, 915, 458, 229, 100 };
 
+// v068: Forward declaration for second_joystick_enable (defined later)
+extern int second_joystick_enable;
+
 static void sf2000_apply_settings(void) {
     prefs_gfx_framerate = sf2000_frameskip;
     produce_sound = sf2000_sound_mode;
     m68k_speed = sf2000_cpu_timing;
     // v034: FrogJoy system - MOUSE_EMULATED based on whether any controller is mouse mode
     MOUSE_EMULATED = (sf2000_frogjoy1 == 2 || sf2000_frogjoy2 == 2) ? 1 : -1;
+    // v068: Also update second_joystick_enable - this was missing and caused menu mouse toggle to fail!
+    // When mouse mode is active, disable second joystick (same as L+R toggle does)
+    if (MOUSE_EMULATED == 1) {
+        second_joystick_enable = 0;
+    }
     floppy_speed = floppy_speed_table[sf2000_turbo_floppy];
+    // v069: Apply mouse speed from table
+    PAS = mouse_speed_table[sf2000_mouse_speed];
+    // v073: Apply Slow RAM setting (expanded to 1.5MB)
+    prefs_bogomem_size = slowram_values[sf2000_slowram];
 }
 
 // Convert 4-bit config to joy1dir format
@@ -388,8 +498,11 @@ void sf2000_settings_overlay(char *pixels) {
     DrawFBoxBmp(pixels, MENU_X + 5, y + 2, MENU_W - 10, 1, MENU_SEP);
     y += 10;
 
-    // Settings items
-    for (int i = 0; i < SF2000_SETTINGS_ITEMS; i++) {
+    // v070: Settings items with scrolling
+    int end_item = sf2000_settings_scroll + SF2000_SETTINGS_VISIBLE;
+    if (end_item > SF2000_SETTINGS_ITEMS) end_item = SF2000_SETTINGS_ITEMS;
+
+    for (int i = sf2000_settings_scroll; i < end_item; i++) {
         unsigned int col = (sf2000_settings_item == i) ? MENU_SEL : MENU_FG;
         const char *sel = (sf2000_settings_item == i) ? ">" : " ";
 
@@ -398,7 +511,11 @@ void sf2000_settings_overlay(char *pixels) {
                 snprintf(buf, sizeof(buf), "%sKickstart: %s", sel, kickstart_str(sf2000_kickstart));
                 break;
             case 1:
-                snprintf(buf, sizeof(buf), "%sFast RAM: %dMB", sel, fastram_values[sf2000_fastram]);
+                // v073: Slow RAM (Off/512KB/1MB/1.5MB)
+                {
+                    const char* slowram_str[] = {"Off", "512KB", "1MB", "1.5MB"};
+                    snprintf(buf, sizeof(buf), "%sSlow RAM: %s", sel, slowram_str[sf2000_slowram]);
+                }
                 break;
             case 2:
                 snprintf(buf, sizeof(buf), "%sReset Machine", sel);
@@ -407,11 +524,21 @@ void sf2000_settings_overlay(char *pixels) {
                 snprintf(buf, sizeof(buf), "%sSave Config", sel);
                 break;
             case 4:
+                // v070: Delete Config in reddish warning color
+                snprintf(buf, sizeof(buf), "%sDelete Config", sel);
+                col = (sf2000_settings_item == i) ? RGB565(255, 100, 100) : RGB565(200, 80, 80);
+                break;
+            case 5:
                 snprintf(buf, sizeof(buf), "%sBack", sel);
                 break;
         }
         Draw_text(pixels, MENU_X + 10, y, col, MENU_BG, 1, 1, 30, buf);
         y += MENU_LINE_H;
+    }
+
+    // v073: Show blue down arrow indicator if more items below
+    if (end_item < SF2000_SETTINGS_ITEMS) {
+        Draw_text(pixels, MENU_X + (MENU_W / 2) - 10, y, RGB565(0, 150, 255), MENU_BG, 1, 1, 10, "\\/");
     }
 
     // Help text at bottom
@@ -437,7 +564,7 @@ void sf2000_about_overlay(char *pixels) {
     y += 12;
 
     // Version
-    Draw_text(pixels, MENU_X + 50, y, MENU_FG, MENU_BG, 1, 1, 30, "SF2K-UAE v058");
+    Draw_text(pixels, MENU_X + 50, y, MENU_FG, MENU_BG, 1, 1, 30, "SF2K-UAE v073");
     y += MENU_LINE_H;
     Draw_text(pixels, MENU_X + 25, y, MENU_AUTHOR, MENU_BG, 1, 1, 30, "Amiga 500 Emulator");
     y += MENU_LINE_H + 4;
@@ -527,7 +654,7 @@ void sf2000_menu_overlay(char *pixels) {
     char buf[40];
 
     // Title line 1 - cyan (centered)
-    Draw_text(pixels, MENU_X + 55, y, MENU_TITLE, MENU_BG, 1, 1, 30, "SF2K-UAE v058");
+    Draw_text(pixels, MENU_X + 55, y, MENU_TITLE, MENU_BG, 1, 1, 30, "SF2K-UAE v073");
     y += MENU_LINE_H;
 
     // Title line 2 - gray author
@@ -570,27 +697,39 @@ void sf2000_menu_overlay(char *pixels) {
                 snprintf(buf, sizeof(buf), "%s3.FrogJoy2: %s", sel, frogjoy_str(sf2000_frogjoy2));
                 break;
             case 3:
-                snprintf(buf, sizeof(buf), "%s4.Frameskip: %d", sel, sf2000_frameskip);
+                // v070: Mouse Speed 1-8 - inactive (gray) when no mouse selected
+                {
+                    int mouse_active = (sf2000_frogjoy1 == 2 || sf2000_frogjoy2 == 2);
+                    if (mouse_active) {
+                        snprintf(buf, sizeof(buf), "%s4.MouseSpd: %d/8", sel, sf2000_mouse_speed + 1);
+                    } else {
+                        snprintf(buf, sizeof(buf), "%s4.MouseSpd: --", sel);
+                        col = 0x8410;  // Gray color when inactive
+                    }
+                }
                 break;
             case 4:
-                snprintf(buf, sizeof(buf), "%s5.Sound: %s", sel, sound_str);
+                snprintf(buf, sizeof(buf), "%s5.Frameskip: %d", sel, sf2000_frameskip);
                 break;
             case 5:
-                snprintf(buf, sizeof(buf), "%s6.CPU: %d", sel, sf2000_cpu_timing);
+                snprintf(buf, sizeof(buf), "%s6.Sound: %s", sel, sound_str);
                 break;
             case 6:
-                snprintf(buf, sizeof(buf), "%s7.Y-Offset: %d", sel, sf2000_y_offset);
+                snprintf(buf, sizeof(buf), "%s7.CPU: %d", sel, sf2000_cpu_timing);
                 break;
             case 7:
-                snprintf(buf, sizeof(buf), "%s8.Floppy: %s", sel, turbo_str[sf2000_turbo_floppy]);
+                snprintf(buf, sizeof(buf), "%s8.Y-Offset: %d", sel, sf2000_y_offset);
                 break;
             case 8:
-                snprintf(buf, sizeof(buf), "%s9.Settings...", sel);
+                snprintf(buf, sizeof(buf), "%s9.Floppy: %s", sel, turbo_str[sf2000_turbo_floppy]);
                 break;
             case 9:
-                snprintf(buf, sizeof(buf), "%sA.About...", sel);
+                snprintf(buf, sizeof(buf), "%sA.Settings...", sel);
                 break;
             case 10:
+                snprintf(buf, sizeof(buf), "%sB.About...", sel);
+                break;
+            case 11:
                 snprintf(buf, sizeof(buf), "%s0.EXIT", sel);
                 break;
         }
@@ -651,7 +790,7 @@ static void sf2000_handle_menu_input(void) {
         return;
     }
 
-    // v058: Settings submenu - full navigation
+    // v070: Settings submenu - full navigation with scroll and START exit
     if (sf2000_settings_active) {
         if (details_entry_delay > 0) {
             details_entry_delay--;
@@ -663,52 +802,74 @@ static void sf2000_handle_menu_input(void) {
         int cur_right = input_state_cb_menu(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT);
         int cur_a     = input_state_cb_menu(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A);
         int cur_b     = input_state_cb_menu(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B);
+        int cur_start = input_state_cb_menu(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START);
 
-        static int s_prev_up = 0, s_prev_down = 0, s_prev_left = 0, s_prev_right = 0, s_prev_a = 0, s_prev_b = 0;
+        static int s_prev_up = 0, s_prev_down = 0, s_prev_left = 0, s_prev_right = 0, s_prev_a = 0, s_prev_b = 0, s_prev_start = 0;
         static int s_delay = 0;
 
         if (s_delay > 0) s_delay--;
 
-        // B closes settings
+        // v070: START exits to main menu (not closes everything)
+        if (cur_start && !s_prev_start) {
+            sf2000_settings_active = 0;
+            sf2000_settings_item = 0;
+            sf2000_settings_scroll = 0;
+            details_entry_delay = 15;
+            s_prev_start = cur_start;
+            return;
+        }
+
+        // B also closes settings
         if (cur_b && !s_prev_b) {
             sf2000_settings_active = 0;
             sf2000_settings_item = 0;
+            sf2000_settings_scroll = 0;
             details_entry_delay = 15;
             s_prev_b = cur_b;
             return;
         }
 
         if (s_delay == 0) {
-            // UP/DOWN - navigate items
+            // UP/DOWN - navigate items with scroll
             if (cur_up && !s_prev_up) {
                 sf2000_settings_item--;
                 if (sf2000_settings_item < 0) sf2000_settings_item = SF2000_SETTINGS_ITEMS - 1;
+                // v070: Adjust scroll
+                if (sf2000_settings_item < sf2000_settings_scroll)
+                    sf2000_settings_scroll = sf2000_settings_item;
+                if (sf2000_settings_item >= sf2000_settings_scroll + SF2000_SETTINGS_VISIBLE)
+                    sf2000_settings_scroll = sf2000_settings_item - SF2000_SETTINGS_VISIBLE + 1;
                 s_delay = 8;
             }
             if (cur_down && !s_prev_down) {
                 sf2000_settings_item++;
                 if (sf2000_settings_item >= SF2000_SETTINGS_ITEMS) sf2000_settings_item = 0;
+                // v070: Adjust scroll
+                if (sf2000_settings_item < sf2000_settings_scroll)
+                    sf2000_settings_scroll = sf2000_settings_item;
+                if (sf2000_settings_item >= sf2000_settings_scroll + SF2000_SETTINGS_VISIBLE)
+                    sf2000_settings_scroll = sf2000_settings_item - SF2000_SETTINGS_VISIBLE + 1;
                 s_delay = 8;
             }
             // LEFT/RIGHT - change values
             if (cur_left && !s_prev_left) {
                 switch (sf2000_settings_item) {
                     case 0: if (sf2000_kickstart > 0) sf2000_kickstart--; else sf2000_kickstart = 2; break;  // Kickstart
-                    case 1: if (sf2000_fastram > 0) sf2000_fastram--; else sf2000_fastram = 4; break;  // Fast RAM
+                    case 1: if (sf2000_slowram > 0) sf2000_slowram--; else sf2000_slowram = 3; break;  // v073: Slow RAM cycle
                 }
                 s_delay = 8;
             }
             if (cur_right && !s_prev_right) {
                 switch (sf2000_settings_item) {
                     case 0: if (sf2000_kickstart < 2) sf2000_kickstart++; else sf2000_kickstart = 0; break;  // Kickstart
-                    case 1: if (sf2000_fastram < 4) sf2000_fastram++; else sf2000_fastram = 0; break;  // Fast RAM
+                    case 1: if (sf2000_slowram < 3) sf2000_slowram++; else sf2000_slowram = 0; break;  // v073: Slow RAM cycle
                 }
                 s_delay = 8;
             }
             // A - select action
             if (cur_a && !s_prev_a) {
                 switch (sf2000_settings_item) {
-                    case 2:  // Reset Machine (applies Kickstart change)
+                    case 2:  // Reset Machine (applies Kickstart change) - v073: shifted back
                         update_romfile_for_kickstart();  // Update ROM path before reset
                         uae_reset();
                         sf2000_set_feedback("Reset with new settings!");
@@ -717,16 +878,31 @@ static void sf2000_handle_menu_input(void) {
                         pauseg = 0;
                         menu_first_frame = 1;
                         break;
-                    case 3:  // Save Config
+                    case 3:  // Save Config - v073: shifted back
                         if (sf2000_save_config()) {
                             sf2000_set_feedback("Config saved!");
                         } else {
                             sf2000_set_feedback("Save FAILED!");
                         }
                         break;
-                    case 4:  // Back
+                    case 4:  // v070: Delete Config - v073: shifted back
+                        {
+                            char path[256];
+                            get_config_path(path, sizeof(path));
+                            // No fs_unlink in firmware, so truncate file to 0 bytes
+                            int fd = fs_open(path, FS_O_WRONLY | FS_O_TRUNC, 0777);
+                            if (fd >= 0) {
+                                fs_close(fd);
+                                sf2000_set_feedback("Config deleted!");
+                            } else {
+                                sf2000_set_feedback("No config to delete");
+                            }
+                        }
+                        break;
+                    case 5:  // Back - v073: shifted back
                         sf2000_settings_active = 0;
                         sf2000_settings_item = 0;
+                        sf2000_settings_scroll = 0;
                         details_entry_delay = 15;
                         break;
                 }
@@ -740,6 +916,7 @@ static void sf2000_handle_menu_input(void) {
         s_prev_right = cur_right;
         s_prev_a = cur_a;
         s_prev_b = cur_b;
+        s_prev_start = cur_start;
         return;
     }
 
@@ -786,58 +963,68 @@ static void sf2000_handle_menu_input(void) {
             if (sf2000_menu_item >= SF2000_MENU_ITEMS) sf2000_menu_item = 0;
             menu_delay = 8;
         }
-        // LEFT - decrease value (v058: Settings/About are submenus, no inline values)
+        // LEFT - decrease value (v069: added Mouse Speed at case 3)
         if (cur_left && !prev_left) {
             switch (sf2000_menu_item) {
                 case 0: break;  // Disks submenu - opens via A
                 case 1: if (sf2000_frogjoy1 > 0) sf2000_frogjoy1--; else sf2000_frogjoy1 = 2; break;
                 case 2: if (sf2000_frogjoy2 > 0) sf2000_frogjoy2--; else sf2000_frogjoy2 = 2; break;
-                case 3: if (sf2000_frameskip > 0) sf2000_frameskip--; break;
-                case 4: if (sf2000_sound_mode > 0) sf2000_sound_mode--; break;
-                case 5: if (sf2000_cpu_timing > 1) sf2000_cpu_timing--; break;
-                case 6: if (sf2000_y_offset > -50) sf2000_y_offset -= 5; break;
-                case 7: if (sf2000_turbo_floppy > 0) sf2000_turbo_floppy--; break;
-                case 8: break;  // Settings submenu - opens via A
-                case 9: break;  // About submenu - opens via A
-                case 10: break;  // EXIT
+                case 3:  // v069: Mouse Speed - only works when mouse is active
+                    if (sf2000_frogjoy1 == 2 || sf2000_frogjoy2 == 2) {
+                        if (sf2000_mouse_speed > 0) sf2000_mouse_speed--;
+                    }
+                    break;
+                case 4: if (sf2000_frameskip > 0) sf2000_frameskip--; break;
+                case 5: if (sf2000_sound_mode > 0) sf2000_sound_mode--; break;
+                case 6: if (sf2000_cpu_timing > 1) sf2000_cpu_timing--; break;
+                case 7: if (sf2000_y_offset > -50) sf2000_y_offset -= 5; break;
+                case 8: if (sf2000_turbo_floppy > 0) sf2000_turbo_floppy--; break;
+                case 9: break;  // Settings submenu - opens via A
+                case 10: break;  // About submenu - opens via A
+                case 11: break;  // EXIT
             }
             sf2000_apply_settings();
             menu_delay = 8;
         }
-        // RIGHT - increase value (v058: Settings/About are submenus, no inline values)
+        // RIGHT - increase value (v069: added Mouse Speed at case 3)
         if (cur_right && !prev_right) {
             switch (sf2000_menu_item) {
                 case 0: break;  // Disks submenu - opens via A
                 case 1: if (sf2000_frogjoy1 < 2) sf2000_frogjoy1++; else sf2000_frogjoy1 = 0; break;
                 case 2: if (sf2000_frogjoy2 < 2) sf2000_frogjoy2++; else sf2000_frogjoy2 = 0; break;
-                case 3: if (sf2000_frameskip < 5) sf2000_frameskip++; break;
-                case 4: if (sf2000_sound_mode < 2) sf2000_sound_mode++; break;
-                case 5: if (sf2000_cpu_timing < 8) sf2000_cpu_timing++; break;
-                case 6: if (sf2000_y_offset < 50) sf2000_y_offset += 5; break;
-                case 7: if (sf2000_turbo_floppy < 4) sf2000_turbo_floppy++; break;
-                case 8: break;  // Settings submenu - opens via A
-                case 9: break;  // About submenu - opens via A
-                case 10: break;  // EXIT
+                case 3:  // v069: Mouse Speed - only works when mouse is active
+                    if (sf2000_frogjoy1 == 2 || sf2000_frogjoy2 == 2) {
+                        if (sf2000_mouse_speed < 7) sf2000_mouse_speed++;  // v070: max 8 speeds
+                    }
+                    break;
+                case 4: if (sf2000_frameskip < 5) sf2000_frameskip++; break;
+                case 5: if (sf2000_sound_mode < 2) sf2000_sound_mode++; break;
+                case 6: if (sf2000_cpu_timing < 8) sf2000_cpu_timing++; break;
+                case 7: if (sf2000_y_offset < 50) sf2000_y_offset += 5; break;
+                case 8: if (sf2000_turbo_floppy < 4) sf2000_turbo_floppy++; break;
+                case 9: break;  // Settings submenu - opens via A
+                case 10: break;  // About submenu - opens via A
+                case 11: break;  // EXIT
             }
             sf2000_apply_settings();
             menu_delay = 8;
         }
-        // A - confirm / exit / open submenus (v058: Settings and About submenus)
+        // A - confirm / exit / open submenus (v069: indices shifted +1 due to Mouse Speed)
         if (cur_a && !prev_a) {
             if (sf2000_menu_item == 0) {  // Disk Shuffler
                 sf2000_disk_shuffler_active = 1;
                 details_entry_delay = 15;
                 menu_delay = 15;
-            } else if (sf2000_menu_item == 8) {  // Settings
+            } else if (sf2000_menu_item == 9) {  // Settings
                 sf2000_settings_active = 1;
                 sf2000_settings_item = 0;
                 details_entry_delay = 15;
                 menu_delay = 15;
-            } else if (sf2000_menu_item == 9) {  // About
+            } else if (sf2000_menu_item == 10) {  // About
                 sf2000_about_active = 1;
                 details_entry_delay = 15;
                 menu_delay = 15;
-            } else if (sf2000_menu_item == 10) {  // EXIT
+            } else if (sf2000_menu_item == 11) {  // EXIT
                 sf2000_menu_active = 0;
                 pauseg = 0;
                 menu_first_frame = 1;
@@ -1411,7 +1598,7 @@ int Retro_PollEvent()
         g_cached_joy1.valid = 1;
     }
 
-    // v035: Auto CPU fix - after 3 seconds, open menu, toggle CPU, close
+    // v035: Auto CPU fix - after 1 minute, open menu, toggle CPU, close
     // This fixes a bug where emulation is 40% slower until user manually touches CPU setting
     if (!sf2000_auto_fix_done && !sf2000_menu_active && pauseg == 0) {
         sf2000_frame_counter++;
@@ -1466,33 +1653,30 @@ int Retro_PollEvent()
         menu_start_held = 0;
     }
 
-    // v054: L+R held for 3 seconds toggles mouse emulation mode
-    // Requires 3 second hold to prevent accidental activation
+    // v068: L+R INSTANT toggle for mouse emulation (restored from v053)
+    // Quick toggle without holding - just press L+R together
     {
-        static int lr_hold_frames = 0;
-        static int lr_triggered = 0;
-        #define LR_HOLD_FRAMES_REQUIRED (60 * 3)  // 3 seconds at 60fps
-
+        static int lr_combo_held = 0;
         int l_btn = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L);
         int r_btn = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R);
-
         if (l_btn && r_btn) {
-            lr_hold_frames++;
-            if (lr_hold_frames >= LR_HOLD_FRAMES_REQUIRED && !lr_triggered) {
-                // Toggle mouse emulation
-                MOUSE_EMULATED = -MOUSE_EMULATED;
+            if (!lr_combo_held) {
+                // Toggle mouse emulation - this also updates FrogJoy1 setting
+                // so menu shows correct state
                 if (MOUSE_EMULATED == 1) {
-                    second_joystick_enable = 0;
-                    // Also update FrogJoy1 setting to match
-                    sf2000_frogjoy1 = 2;  // Mouse mode
-                } else {
+                    // Currently mouse - switch to joystick
+                    MOUSE_EMULATED = -1;
                     sf2000_frogjoy1 = 0;  // P1 Joy mode
+                } else {
+                    // Currently joystick - switch to mouse
+                    MOUSE_EMULATED = 1;
+                    second_joystick_enable = 0;
+                    sf2000_frogjoy1 = 2;  // Mouse mode
                 }
-                lr_triggered = 1;
+                lr_combo_held = 1;
             }
         } else {
-            lr_hold_frames = 0;
-            lr_triggered = 0;
+            lr_combo_held = 0;
         }
     }
 
@@ -1548,17 +1732,14 @@ int Retro_PollEvent()
 
         if(pauseg!=0 )return 1;
 
-        // v054: Read from correct controller based on which FrogJoy is set to Mouse
-        // FrogJoy1=Mouse (sf2000_frogjoy1==2) -> use controller 0
-        // FrogJoy2=Mouse (sf2000_frogjoy2==2) -> use controller 1
-        int mouse_ctrl = (sf2000_frogjoy2 == 2) ? 1 : 0;
-
-        if (input_state_cb(mouse_ctrl, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT))rmouse_x += PAS;
-        if (input_state_cb(mouse_ctrl, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT ))rmouse_x -= PAS;
-        if (input_state_cb(mouse_ctrl, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN ))rmouse_y += PAS;
-        if (input_state_cb(mouse_ctrl, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP   ))rmouse_y -= PAS;
-        mouse_l=input_state_cb(mouse_ctrl, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A);
-        mouse_r=input_state_cb(mouse_ctrl, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B);
+        // v068: Always use controller 0 for mouse (simplified from v053)
+        // This ensures mouse works regardless of FrogJoy settings
+        if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT))rmouse_x += PAS;
+        if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT ))rmouse_x -= PAS;
+        if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN ))rmouse_y += PAS;
+        if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP   ))rmouse_y -= PAS;
+        mouse_l=input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A);
+        mouse_r=input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B);
     }
     else {
 
@@ -1628,16 +1809,18 @@ int Retro_PollEvent()
         buttonstate[0] = mmbL;  // L = LMB
         buttonstate[2] = mmbR;  // R = RMB
 
-        // v054: Handle FrogJoy1 mouse mode (controller 0)
+        // v073: Handle FrogJoy1 mouse mode (controller 0) - A=RMB, B=LMB
         if (sf2000_frogjoy1 == 2) {
-            // FrogJoy1 = Mouse mode: D-pad controls mouse, A/B = LMB
-            buttonstate[0] |= (fire_a_0 | fire_b_0);  // A/B also trigger LMB
+            // FrogJoy1 = Mouse mode: D-pad controls mouse, B=LMB, A=RMB
+            buttonstate[0] |= fire_b_0;  // B = LMB
+            buttonstate[2] |= fire_a_0;  // A = RMB
         }
 
-        // v054: Handle FrogJoy2 mouse mode (controller 1)
+        // v073: Handle FrogJoy2 mouse mode (controller 1) - A=RMB, B=LMB
         if (sf2000_frogjoy2 == 2) {
-            // FrogJoy2 = Mouse mode: D-pad controls mouse, A/B = LMB
-            buttonstate[0] |= (fire_a_1 | fire_b_1);  // A/B also trigger LMB
+            // FrogJoy2 = Mouse mode: D-pad controls mouse, B=LMB, A=RMB
+            buttonstate[0] |= fire_b_1;  // B = LMB
+            buttonstate[2] |= fire_a_1;  // A = RMB
         }
 
         // Handle FrogJoy1 joystick modes

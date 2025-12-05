@@ -24,6 +24,8 @@
 #include "zfile.h"
 
 unsigned prefs_chipmem_size;
+unsigned prefs_bogomem_size;  // v071: Slow RAM size
+unsigned prefs_fastmem_size;  // v072: Fast RAM size
 
 #ifdef USE_MAPPED_MEMORY
 #include <sys/mman.h>
@@ -445,6 +447,84 @@ uae_u8 REGPARAM2 *bogomem_xlate (uaecptr addr)
     return bogomemory + addr;
 }
 
+/* v072: Zorro II Fast RAM (mapped at 0x200000) */
+static uae_u8 *fastmemory;
+static uae_u32 fastmem_start = 0x200000;
+static uae_u32 fastmem_mask;
+
+static uae_u32 fastmem_lget (uaecptr) REGPARAM;
+static uae_u32 fastmem_wget (uaecptr) REGPARAM;
+static uae_u32 fastmem_bget (uaecptr) REGPARAM;
+static void fastmem_lput (uaecptr, uae_u32) REGPARAM;
+static void fastmem_wput (uaecptr, uae_u32) REGPARAM;
+static void fastmem_bput (uaecptr, uae_u32) REGPARAM;
+static int fastmem_check (uaecptr addr, uae_u32 size) REGPARAM;
+static uae_u8 *fastmem_xlate (uaecptr addr) REGPARAM;
+
+uae_u32 REGPARAM2 fastmem_lget (uaecptr addr)
+{
+    uae_u32 *m;
+    addr -= fastmem_start;
+    addr &= fastmem_mask;
+    m = (uae_u32 *)(fastmemory + addr);
+    return SWAP_L(do_get_mem_long (m));
+}
+
+uae_u32 REGPARAM2 fastmem_wget (uaecptr addr)
+{
+    uae_u16 *m;
+    addr -= fastmem_start;
+    addr &= fastmem_mask;
+    m = (uae_u16 *)(fastmemory + addr);
+    return SWAP_W(do_get_mem_word (m));
+}
+
+uae_u32 REGPARAM2 fastmem_bget (uaecptr addr)
+{
+    addr -= fastmem_start;
+    addr &= fastmem_mask;
+    return fastmemory[addr];
+}
+
+void REGPARAM2 fastmem_lput (uaecptr addr, uae_u32 l)
+{
+    uae_u32 *m;
+    addr -= fastmem_start;
+    addr &= fastmem_mask;
+    m = (uae_u32 *)(fastmemory + addr);
+    do_put_mem_long (m, SWAP_L(l));
+}
+
+void REGPARAM2 fastmem_wput (uaecptr addr, uae_u32 w)
+{
+    uae_u16 *m;
+    addr -= fastmem_start;
+    addr &= fastmem_mask;
+    m = (uae_u16 *)(fastmemory + addr);
+    do_put_mem_word (m, SWAP_W(w));
+}
+
+void REGPARAM2 fastmem_bput (uaecptr addr, uae_u32 b)
+{
+    addr -= fastmem_start;
+    addr &= fastmem_mask;
+    fastmemory[addr] = b;
+}
+
+int REGPARAM2 fastmem_check (uaecptr addr, uae_u32 size)
+{
+    addr -= fastmem_start;
+    addr &= fastmem_mask;
+    return (addr + size) <= allocated_fastmem;
+}
+
+uae_u8 REGPARAM2 *fastmem_xlate (uaecptr addr)
+{
+    addr -= fastmem_start;
+    addr &= fastmem_mask;
+    return fastmemory + addr;
+}
+
 /* A3000 motherboard fast memory */
 
 static uae_u8 *a3000memory;
@@ -808,6 +888,13 @@ addrbank bogomem_bank = {
     bogomem_lget, bogomem_wget, bogomem_bget,
     bogomem_lput, bogomem_wput, bogomem_bput,
     bogomem_xlate, bogomem_check, NULL
+};
+
+// v072: Fast RAM bank
+addrbank fastmem_bank = {
+    fastmem_lget, fastmem_wget, fastmem_bget,
+    fastmem_lput, fastmem_wput, fastmem_bput,
+    fastmem_xlate, fastmem_check, NULL
 };
 
 addrbank a3000mem_bank = {
@@ -1183,6 +1270,42 @@ static void allocate_memory (void)
 	    do_put_mem_long ((uae_u32 *)(chipmemory + 4), swab_l(0));
     }
 
+    // v071: Allocate Slow RAM (bogomem) if requested
+    if (allocated_bogomem != prefs_bogomem_size) {
+	if (bogomemory)
+	    mapped_free (bogomemory);
+	bogomemory = 0;
+	allocated_bogomem = prefs_bogomem_size;
+
+	if (allocated_bogomem > 0) {
+	    bogomem_mask = allocated_bogomem - 1;
+	    bogomemory = (uae_u8 *)mapped_malloc (allocated_bogomem, "bogo");
+
+	    if (bogomemory == 0) {
+		write_log ("Warning: out of memory for bogomem (Slow RAM).\n");
+		allocated_bogomem = 0;
+	    }
+	}
+    }
+
+    // v072: Allocate Fast RAM if requested
+    if (allocated_fastmem != prefs_fastmem_size) {
+	if (fastmemory)
+	    mapped_free (fastmemory);
+	fastmemory = 0;
+	allocated_fastmem = prefs_fastmem_size;
+
+	if (allocated_fastmem > 0) {
+	    fastmem_mask = allocated_fastmem - 1;
+	    fastmemory = (uae_u8 *)mapped_malloc (allocated_fastmem, "fast");
+
+	    if (fastmemory == 0) {
+		write_log ("Warning: out of memory for fastmem (Fast RAM).\n");
+		allocated_fastmem = 0;
+	    }
+	}
+    }
+
     if (savestate_state == STATE_RESTORE)
     {
 	    fseek (savestate_file, chip_filepos, SEEK_SET);
@@ -1309,6 +1432,19 @@ void memory_reset (void)
 #endif
 	map_banks (&bogomem_bank, 0xC0, t, allocated_bogomem);
     }
+
+    // v072: Map Fast RAM at 0x200000
+    if (fastmemory != 0) {
+	int t = allocated_fastmem >> 16;
+	if (t > 0x80)  // Max 8MB (0x800000)
+	    t = 0x80;
+#ifdef DEBUG_MEMORY
+    dbg("map_banks : fastmem_bank");
+#endif
+	map_banks (&fastmem_bank, 0x20, t, allocated_fastmem);
+	fastmem_bank.baseaddr = fastmemory;
+    }
+
     if (a3000memory != 0)
     {
 #ifdef DEBUG_MEMORY
@@ -1371,12 +1507,14 @@ void memory_init (void)
 #endif
     allocated_chipmem = 0;
     allocated_bogomem = 0;
+    allocated_fastmem = 0;  // v072
     allocated_a3000mem = 0;
     kickmemory = 0;
     extendedkickmemory = 0;
     chipmemory = 0;
     a3000memory = 0;
     bogomemory = 0;
+    fastmemory = 0;  // v072
 
     kickmemory = mapped_malloc (kickmem_size, "kick");
     kickmem_bank.baseaddr = kickmemory;
@@ -1396,6 +1534,8 @@ void memory_cleanup (void)
 	mapped_free (a3000memory);
     if (bogomemory)
 	mapped_free (bogomemory);
+    if (fastmemory)  // v072
+	mapped_free (fastmemory);
     if (kickmemory)
 	mapped_free (kickmemory);
     if (a1000_bootrom)
@@ -1576,8 +1716,9 @@ uae_u8 *save_rom (int first, int *len)
 
 uae_u8 *save_fram (int *len)
 {
-    *len = 0; //allocated_fastmem;
-    return NULL;
+    // v072: Return actual fast RAM if allocated
+    *len = allocated_fastmem;
+    return fastmemory;
 }
 
 uae_u8 *save_zram (int *len)

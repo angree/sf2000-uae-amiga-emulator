@@ -87,7 +87,8 @@ extern void sf2000_settings_overlay(char *pixels);  // v058: Settings submenu ov
 extern void sf2000_about_overlay(char *pixels);     // v058: About submenu overlay
 extern void sf2000_disk_shuffler_overlay(char *pixels);  // v055: Disk Shuffler overlay
 extern void sf2000_joy_debug_overlay(char *pixels);  // v025: joystick debug overlay (now no-op)
-extern void sf2000_init_config(void);  // v058: Load config at startup
+extern void sf2000_init_config(void);  // v067: Load per-game config at startup
+extern void sf2000_apply_kickstart_override(void);  // v067: Apply kickstart after default_prefs
 extern void sf2000_feedback_overlay(char *pixels);  // v058: Feedback message overlay
 
 #include "cmdline.cpp"
@@ -324,7 +325,11 @@ void update_prefs_retrocfg(void)
    if (strcasestr(RPATH,".uae"))
       cfgfile_load(RPATH);
 
+   // Set default kickstart (kick13.rom)
    path_join(romfile, retro_system_directory, A500_ROM);
+
+   // v067: Override kickstart if per-game config specified different one
+   sf2000_apply_kickstart_override();
 }
 
 
