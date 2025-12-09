@@ -1051,7 +1051,8 @@ uae_u8 *restore_audio (uae_u8 *src, int i)
 uae_u8 *save_audio (int *len, int i)
 {
     struct audio_channel_data *acd;
-    uae_u8 *dst = (uae_u8 *)malloc (100);
+    /* v088: Use arena allocator if available */
+    uae_u8 *dst = (uae_u8 *)(savestate_use_arena ? savestate_arena_alloc(100) : malloc(100));
     uae_u8 *dstbak = dst;
     uae_u16 p;
 

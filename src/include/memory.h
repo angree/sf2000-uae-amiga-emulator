@@ -16,6 +16,7 @@ void swab_memory (uae_u8 *apMemory, uae_u32 aSize);
 
 
 extern void memory_reset (void);
+extern void restore_ram_from_savestate(void);  /* v084: restore RAM in buffer mode */
 extern unsigned chipmem_checksum(void);
 
 extern int special_mem;

@@ -882,8 +882,13 @@ uae_u8 *save_cpu (int *len)
 {
     uae_u8 *dstbak,*dst;
     int model,i;
+    size_t alloc_size = 4+4+15*4+4+4+4+4+2+4+4+4+4+4+4+4;
 
-    dstbak = dst = (uae_u8 *)malloc(4+4+15*4+4+4+4+4+2+4+4+4+4+4+4+4);
+    /* v088: Use arena allocator if available, otherwise malloc */
+    if (savestate_use_arena)
+        dstbak = dst = (uae_u8 *)savestate_arena_alloc(alloc_size);
+    else
+        dstbak = dst = (uae_u8 *)malloc(alloc_size);
     model = 68000;
     save_u32 (model);					/* MODEL */
     save_u32 (1); //currprefs.address_space_24 ? 1 : 0);	/* FLAGS */

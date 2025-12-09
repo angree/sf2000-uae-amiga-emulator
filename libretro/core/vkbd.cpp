@@ -28,7 +28,7 @@ void virtual_kdb(char *pixels,int vx,int vy)
    XSIDE2 = (5*scale*3)+xoff;
    YSIDE2 = (8*scale)+2;
 
-   XBASE = (retrow-NPLGN*XSIDE2)/2;  
+   XBASE = (retrow-NPLGN*XSIDE2)/2;
    YBASE = retroh/2 + (retroh/2 -NLIGN*YSIDE2)/2;  
 
    page = (NPAGE == -1) ? 0 : NPLGN*NLIGN;

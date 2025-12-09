@@ -25,10 +25,11 @@ extern void dly_tsk(int ms);
 extern char diag_lines[DIAG_MAX_LINES][DIAG_LINE_LEN];
 extern int diag_line_idx;
 
-/* Add line to diagnostic - LOG ONLY, no screen (fast!) */
+/* Add line to diagnostic - RE-ENABLED in v089 for save state debugging */
 static inline void diag_add(const char *msg) {
-    /* Just log to file - no screen display, no delay */
+    /* v089: Re-enabled xlog for save state diagnostics */
     xlog("UAE4ALL: %s\n", msg);
+    (void)msg; // Suppress unused warning
 }
 
 #define DIAG(msg) diag_add(msg)

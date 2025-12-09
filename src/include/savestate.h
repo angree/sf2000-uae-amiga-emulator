@@ -34,6 +34,11 @@ extern char *restore_string_func (uae_u8 **);
 
 void savestate_restore_finish (void);
 
+/* v088: Arena allocator for save functions - avoids malloc/free fragmentation */
+extern int savestate_use_arena;
+extern void *savestate_arena_alloc(size_t size);
+extern void savestate_arena_reset(void);
+
 /* save, restore and initialize routines for Amiga's subsystems */
 
 extern uae_u8 *restore_cpu (uae_u8 *);
@@ -85,6 +90,10 @@ extern uae_u8 *save_rom (int, int *);
 extern void save_state (char *filename, char *description);
 extern void restore_state (char *filename);
 
+/* v082: Libretro direct buffer I/O functions (no temp files!) */
+extern size_t save_state_to_buffer(void *buffer, size_t max_size);
+extern bool restore_state_from_buffer(const void *buffer, size_t size);
+
 extern void custom_save_state (void);
 
 #define STATE_SAVE 1
@@ -94,4 +103,9 @@ extern void custom_save_state (void);
 
 extern int savestate_state;
 extern char *savestate_filename;
-extern FILE *savestate_file;
+/* v074: savestate_file no longer used - using firmware fs_* functions */
+/* extern FILE *savestate_file; */
+
+/* v074: Global wrappers for memory.cpp to use during restore */
+extern int savestate_fseek(long offset, int whence);
+extern size_t savestate_fread(void *buf, size_t size, size_t count);

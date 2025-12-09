@@ -54,7 +54,7 @@
 #ifdef USE_DRAWING_EXTRA_INLINE
 #define _INLINE_ __inline__
 #else
-#define _INLINE_ 
+#define _INLINE_
 #endif
 
 
@@ -1667,8 +1667,9 @@ static __inline__ void pfield_doline (int lineno)
 static _INLINE_ void init_row_map (void)
 {
     int i;
+    // v095: Reverted to original - offset applied dynamically at point of use
     for (i = 0; i < GFXVIDINFO_HEIGHT + 1; i++)
-	row_map[i] = gfx_mem + gfx_rowbytes * i;
+        row_map[i] = gfx_mem + gfx_rowbytes * i;
 }
 
 static _INLINE_ void init_aspect_maps (void)
@@ -1685,10 +1686,16 @@ static _INLINE_ void init_aspect_maps (void)
     amiga2aspect_line_map = (int *)xmalloc (sizeof (int) * (MAXVPOS + 1)*2 + 1);
     native2amiga_line_map = (int *)xmalloc (sizeof (int) * GFXVIDINFO_HEIGHT);
 
-	native_lines_per_amiga_line = 1;
+    native_lines_per_amiga_line = 1.0;
+
+    // v097: Shift which Amiga lines are rendered (camera movement)
+    extern int uae_render_y_offset;  // from libretro-core.cpp
+    int offset = uae_render_y_offset;
+    if (offset < -50) offset = -50;
+    if (offset > 50) offset = 50;
 
     maxl = (MAXVPOS + 1);
-    min_ypos_for_screen = minfirstline;
+    min_ypos_for_screen = minfirstline + offset;
     max_drawn_amiga_line = -1;
     for (i = 0; i < maxl; i++) {
 	int v = (int) ((i - min_ypos_for_screen) * native_lines_per_amiga_line);

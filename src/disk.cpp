@@ -1651,7 +1651,8 @@ uae_u8 *save_disk(int num,int *len)
     uae_u8 *dstbak,*dst;
     drive *drv;
 
-    dstbak = dst = (uae_u8 *)malloc (2+1+1+1+1+4+4+256);
+    /* v088: Use arena allocator if available */
+    dstbak = dst = (uae_u8 *)(savestate_use_arena ? savestate_arena_alloc(2+1+1+1+1+4+4+256) : malloc(2+1+1+1+1+4+4+256));
     if (num<NUM_DRIVES)
     {
     	drv = &floppy[num];
@@ -1702,7 +1703,8 @@ uae_u8 *save_floppy(int *len)
     /* flush dma buffer before saving */
     dodmafetch();
 
-    dstbak = dst = (uae_u8 *)malloc(2+1+1+1+1+2);
+    /* v088: Use arena allocator if available */
+    dstbak = dst = (uae_u8 *)(savestate_use_arena ? savestate_arena_alloc(2+1+1+1+1+2) : malloc(2+1+1+1+1+2));
     save_u16 (word);		/* current fifo (low word) */
     save_u8 (bitoffset);	/* dma bit offset */
     save_u8 (dma_enable);	/* disk sync found */

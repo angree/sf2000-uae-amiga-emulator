@@ -1,7 +1,12 @@
 /*
  * Uae4all libretro core input implementation
- * SF2K-UAE v073
+ * SF2K-UAE v078
  * (c) Chips 2021, Grzegorz Korycki 2024
+ * v078: DEBUG - return at start of save_state() to find crash
+ * v077: Save/Load State using RPATH (same as config) - FIXED path bug
+ * v076: TEST - Save 1 byte using SAME fs_* as config (RPATH + .asf)
+ * v075: TEST - Save State without RAM (CRAM/BRAM/FRAM/ZRAM skipped)
+ * v074: Save/Load State using firmware fs_* functions (internal save system)
  * v073: Remove Fast RAM, expand Slow RAM to 1.5MB, A=RMB/B=LMB in mouse mode, scroll arrow
  * v072: Fast RAM (1-4MB) implementation at 0x200000 (Zorro II area) - REMOVED
  * v071: Slow RAM (512KB) implementation - replaces non-functional Fast RAM option
@@ -138,8 +143,9 @@ int sf2000_kickstart = 0;  // Default: Kickstart 1.3
 int sf2000_slowram = 0;    // Default: 0KB
 static const unsigned int slowram_values[] = {0, 0x80000, 0x100000, 0x180000};  // 0KB, 512KB, 1MB, 1.5MB
 extern unsigned prefs_bogomem_size;  // From memory.cpp
-// v073: Settings menu items and scrolling (Fast RAM removed - didn't work)
-#define SF2000_SETTINGS_ITEMS 6  // Kickstart, SlowRAM, Reset, Save, Delete, Back
+// v074: Settings menu items and scrolling (added Save/Load State)
+// v091: Removed Save/Load State from menu (use Y button instead)
+#define SF2000_SETTINGS_ITEMS 6  // Kickstart, SlowRAM, Reset, SaveCfg, DeleteCfg, Back
 #define SF2000_SETTINGS_VISIBLE 5  // Max visible items at once
 static int sf2000_settings_scroll = 0;  // Scroll offset for Settings menu
 
@@ -529,6 +535,7 @@ void sf2000_settings_overlay(char *pixels) {
                 col = (sf2000_settings_item == i) ? RGB565(255, 100, 100) : RGB565(200, 80, 80);
                 break;
             case 5:
+                // v091: Back (was case 7 before removing Save/Load State)
                 snprintf(buf, sizeof(buf), "%sBack", sel);
                 break;
         }
@@ -564,7 +571,7 @@ void sf2000_about_overlay(char *pixels) {
     y += 12;
 
     // Version
-    Draw_text(pixels, MENU_X + 50, y, MENU_FG, MENU_BG, 1, 1, 30, "SF2K-UAE v073");
+    Draw_text(pixels, MENU_X + 50, y, MENU_FG, MENU_BG, 1, 1, 30, "SF2K-UAE v078");
     y += MENU_LINE_H;
     Draw_text(pixels, MENU_X + 25, y, MENU_AUTHOR, MENU_BG, 1, 1, 30, "Amiga 500 Emulator");
     y += MENU_LINE_H + 4;
@@ -654,7 +661,7 @@ void sf2000_menu_overlay(char *pixels) {
     char buf[40];
 
     // Title line 1 - cyan (centered)
-    Draw_text(pixels, MENU_X + 55, y, MENU_TITLE, MENU_BG, 1, 1, 30, "SF2K-UAE v073");
+    Draw_text(pixels, MENU_X + 55, y, MENU_TITLE, MENU_BG, 1, 1, 30, "SF2K-UAE v078");
     y += MENU_LINE_H;
 
     // Title line 2 - gray author
@@ -899,7 +906,7 @@ static void sf2000_handle_menu_input(void) {
                             }
                         }
                         break;
-                    case 5:  // Back - v073: shifted back
+                    case 5:  // v091: Back (was case 7, Save/Load State removed from menu)
                         sf2000_settings_active = 0;
                         sf2000_settings_item = 0;
                         sf2000_settings_scroll = 0;

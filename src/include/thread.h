@@ -11,6 +11,14 @@
 #undef SUPPORT_PENGUINS
 #undef SUPPORT_THREADS
 
+/* v074: Define SDL types for libretro/NO_THREADS build */
+#include <stdint.h>
+typedef uint32_t Uint32;
+
+/* v074: SDL_GetTicks is mapped to GetTicks (defined in core-mapper.cpp) */
+extern long GetTicks(void);
+#define SDL_GetTicks GetTicks
+
 typedef int uae_sem_t;
 #define uae_sem_init(a,b,c)
 #define uae_sem_destroy(a)

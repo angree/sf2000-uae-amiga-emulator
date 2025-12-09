@@ -1,4 +1,6 @@
+#ifndef SF2000
 #include <SDL.h>
+#endif
 
 #ifndef DEBUG_UAE4ALL_H
 #define DEBUG_UAE4ALL_H

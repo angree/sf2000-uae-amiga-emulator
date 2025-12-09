@@ -4054,9 +4054,11 @@ void custom_prepare_savestate (void)
     }
 }
 
+#ifndef NO_VKBD
 extern SDLKey vkbd_button2;
 extern SDLKey vkbd_button3;
 extern SDLKey vkbd_button4;
+#endif
 #define RB restore_u8 ()
 #define RW restore_u16 ()
 #define RL restore_u32 ()
@@ -4157,8 +4159,16 @@ uae_u8 *restore_custom (uae_u8 *src)
     clxcon2 = RW;		/* 10E CLXCON2* */
     for(i = 0; i < 8; i++)
 	RW;			/*     BPLXDAT */
-    for(i = 0; i < 32; i++)
-	current_colors.color_uae_regs_ecs[i] = RW; /* 180 COLORxx */
+    /* v085 FIX: Also update acolors[] for correct palette after load state!
+     * color_uae_regs_ecs is the raw Amiga 12-bit color value (0x000-0xFFF)
+     * acolors is the converted RGB565 value used for actual rendering
+     * Without this, palette is corrupted after load state!
+     * Added & 0xFFF mask for safety - prevents array overflow in xcolors[4096] */
+    for(i = 0; i < 32; i++) {
+	uae_u16 col = RW; /* 180 COLORxx */
+	current_colors.color_uae_regs_ecs[i] = col;
+	current_colors.acolors[i] = xcolors[col & 0xFFF];
+    }
     RW;				/* 1C0 ? */
     RW;				/* 1C2 ? */
     RW;				/* 1C4 ? */
@@ -4175,7 +4185,7 @@ uae_u8 *restore_custom (uae_u8 *src)
     RW;				/* 1DA ? */
     new_beamcon0 = RW;		/* 1DC BEAMCON0 */
     RW;				/* 1DE ? */
-#if 0
+#ifdef NO_VKBD
     RW;				/* 1E0 ? */
     RW;				/* 1E2 ? */
     RW;				/* 1E4 ? */
@@ -4216,7 +4226,8 @@ uae_u8 *save_custom (int *len)
     uae_u16 dsklen, dsksync, dskdatr, dskbytr;
 
     DISK_save_custom (&dskpt, &dsklen, &dsksync, &dskdatr, &dskbytr);
-    dstbak = dst = (uae_u8 *)malloc (8+256*2);
+    /* v088: Use arena allocator if available */
+    dstbak = dst = (uae_u8 *)(savestate_use_arena ? savestate_arena_alloc(8+256*2) : malloc(8+256*2));
     SL (0);			/* 000 chipset_mask */
     SW (0);			/* 000 ? */
     SW (dmacon);		/* 002 DMACONR */
@@ -4321,7 +4332,7 @@ uae_u8 *save_custom (int *len)
     SW (0);			/* 1DA */
     SW (beamcon0);		/* 1DC BEAMCON0 */
     SW (0);			/* 1DE */
-#if 0
+#ifdef NO_VKBD
     SW (0);			/* 1E0 */
     SW (0);			/* 1E2 */
     SW (0);			/* 1E4 */
@@ -4362,7 +4373,8 @@ uae_u8 *save_custom_agacolors (int *len)
     uae_u8 *dstbak, *dst;
     int i;
 
-    dstbak = dst = (uae_u8 *)malloc (256*4);
+    /* v088: Use arena allocator if available */
+    dstbak = dst = (uae_u8 *)(savestate_use_arena ? savestate_arena_alloc(256*4) : malloc(256*4));
     for (i = 0; i < 256; i++)
 	SL (0); //current_colors.color_regs_aga[i]);
     *len = dst - dstbak;
@@ -4390,7 +4402,8 @@ uae_u8 *save_custom_sprite(int *len, int num)
 {
     uae_u8 *dstbak, *dst;
 
-    dstbak = dst = (uae_u8 *)malloc (25);
+    /* v088: Use arena allocator if available */
+    dstbak = dst = (uae_u8 *)(savestate_use_arena ? savestate_arena_alloc(25) : malloc(25));
     SL (spr[num].pt);		/* 120-13E SPRxPT */
     SW (sprpos[num]);		/* 1x0 SPRxPOS */
     SW (sprctl[num]);		/* 1x2 SPRxPOS */

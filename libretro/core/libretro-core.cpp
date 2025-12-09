@@ -42,23 +42,25 @@ static const char *strcasestr(const char *haystack, const char *needle) {
 }
 #endif
 
-/* v046: UAE4ALL save state functions for libretro serialize API */
-extern void save_state(char *filename, char *description);
-extern void restore_state(char *filename);
-extern int savestate_state;  /* v047: UAE4ALL save state status global */
-extern int quit_program;      /* v048: Trigger reset sequence for RAM load */
-
-/* v047: Temp file for bridging UAE4ALL file-based to libretro memory-based API */
-#define UAE4ALL_TMP_STATE "/tmp/uae4all_libretro_state.asf"
-
-/* v047: Track if we need to clean up temp file after restore completes */
-static bool pending_state_cleanup = false;
+/* v082: UAE4ALL save state functions for libretro serialize API
+ * Now uses direct buffer I/O - no temp files! */
+extern size_t save_state_to_buffer(void *buffer, size_t max_size);
+extern bool restore_state_from_buffer(const void *buffer, size_t size);
+extern int savestate_state;  /* UAE4ALL save state status global */
 
 unsigned int VIRTUAL_WIDTH=PREFS_GFX_WIDTH;
 unsigned int retrow=PREFS_GFX_WIDTH;
 unsigned int retroh=PREFS_GFX_HEIGHT;
 
 extern char *gfx_mem;
+
+// v094: Y-offset and V-stretch
+extern int mainMenu_vpos;      // from retrogfx.cpp
+extern int sf2000_y_offset;    // from core-mapper.cpp (-50 to +50)
+extern int sf2000_v_stretch;   // from core-mapper.cpp (0 to 32)
+
+// v097: Global variable for Y-offset accessible from drawing.cpp
+int uae_render_y_offset = 0;
 
 extern char uae4all_image_file[];
 extern char uae4all_image_file2[];
@@ -459,7 +461,7 @@ void retro_get_system_info(struct retro_system_info *info)
 {
    memset(info, 0, sizeof(*info));
    info->library_name     = "uae4all";
-   info->library_version  = "v048";
+   info->library_version  = "v083";
    info->valid_extensions = "adf|adz|zip";
    info->need_fullpath    = true;
    info->block_extract    = false;
@@ -553,16 +555,14 @@ void retro_run(void)
          Deffered = 2;
       }
 
-      /* v047: Clean up temp save state file after restore completes */
-      if (pending_state_cleanup && savestate_state == 0) {
-         /* savestate_state == 0 means restore finished and file was closed */
-         remove(UAE4ALL_TMP_STATE);
-         pending_state_cleanup = false;
-      }
+      /* v082: No cleanup needed - buffer mode doesn't use temp files */
 
       Retro_PollEvent();
    }
 
+
+   // v097: Set Y-offset for drawing.cpp (shifts which Amiga lines are rendered)
+   uae_render_y_offset = sf2000_y_offset;
 
    // v017: Only run M68K if not paused (menu or keyboard)
    if(pauseg==0)
@@ -651,133 +651,63 @@ bool retro_load_game_special(unsigned type, const struct retro_game_info *info, 
 }
 
 /*
- * v047: Libretro Serialize API Implementation
+ * v082: Libretro Serialize API Implementation - DIRECT BUFFER I/O
  *
- * Strategy: UAE4ALL uses file-based save_state()/restore_state() functions.
- * We bridge to libretro's memory-based API by using a temporary file.
- *
- * Based on patterns from PicoDrive and SNES9x2002 official SF2000 cores.
- *
- * v047 FIX: Increased state size to 5MB and prevented premature temp file
- * deletion. UAE4ALL's restore is DEFERRED - RAM chunks are read later from
- * the open file handle (savestate_file global) during the emulation frame.
+ * Like PicoDrive and SNES9x2002, we use direct buffer I/O.
+ * NO temp files - save_state_to_buffer() and restore_state_from_buffer()
+ * read/write directly to the libretro-provided buffer!
  */
 
 /* Estimated maximum save state size for Amiga:
- * - Chip RAM: 512KB-2MB
+ * - Chip RAM: 512KB-2MB (uncompressed in buffer mode!)
  * - CPU state: ~1KB
  * - Custom chips: ~4KB
  * - Audio: ~1KB
  * - CIA: ~1KB
  * - Disk state: ~16KB
  * - Expansion: varies
- * v047: Increased from 2.5MB to 5MB (actual observed size: ~4MB)
+ * v082: Keep 5MB for safety with uncompressed RAM
  */
 #define UAE4ALL_STATE_SIZE (5 * 1024 * 1024)  /* 5 MB */
 
 size_t retro_serialize_size(void)
 {
-   /* Return fixed size estimate - UAE4ALL doesn't have a size calculation function
-    * Like PicoDrive, we return maximum possible size */
+   /* Return fixed size estimate - like PicoDrive */
    return UAE4ALL_STATE_SIZE;
 }
 
 bool retro_serialize(void *data, size_t size)
 {
-   FILE *f;
-   size_t actual_size;
-   bool success = false;
+   DIAG("retro_serialize: saving state to buffer (direct I/O)");
 
-   DIAG("retro_serialize: saving state to temp file");
+   /* v082: Direct buffer I/O - no temp file!
+    * save_state_to_buffer returns actual size written, or 0 on error */
+   size_t actual_size = save_state_to_buffer(data, size);
 
-   /* Step 1: Use UAE4ALL to save state to temporary file */
-   save_state((char *)UAE4ALL_TMP_STATE, (char *)"libretro");
-
-   /* Step 2: Read the temporary file into the memory buffer */
-   f = fopen(UAE4ALL_TMP_STATE, "rb");
-   if (!f) {
-      DIAG("retro_serialize: failed to open temp file for reading");
-      return false;
+   if (actual_size > 0 && actual_size <= size) {
+      DIAG("retro_serialize: success");
+      return true;
    }
 
-   /* Get file size */
-   fseek(f, 0, SEEK_END);
-   actual_size = ftell(f);
-   fseek(f, 0, SEEK_SET);
-
-   if (actual_size <= size) {
-      /* Read state data into buffer */
-      size_t bytes_read = fread(data, 1, actual_size, f);
-      if (bytes_read == actual_size) {
-         success = true;
-      }
-   }
-
-   fclose(f);
-
-   /* Clean up temp file */
-   remove(UAE4ALL_TMP_STATE);
-
-   return success;
+   DIAG("retro_serialize: failed");
+   return false;
 }
 
 bool retro_unserialize(const void *data, size_t size)
 {
-   FILE *f;
-   size_t bytes_written;
+   DIAG("retro_unserialize: restoring state from buffer (direct I/O)");
 
-   /* Step 1: Write firmware buffer to temporary file */
-   f = fopen(UAE4ALL_TMP_STATE, "wb");
-   if (!f) {
-      return false;
-   }
+   /* v082: Direct buffer I/O - no temp file!
+    * restore_state_from_buffer returns true on success */
+   bool success = restore_state_from_buffer(data, size);
 
-   bytes_written = fwrite(data, 1, size, f);
-   fclose(f);
-
-   if (bytes_written != size) {
-      remove(UAE4ALL_TMP_STATE);
-      return false;
-   }
-
-   /* Step 2: Call UAE4ALL restore_state() - this keeps the file open!
-    *
-    * CRITICAL: restore_state() stores the file handle in the global
-    * savestate_file and sets savestate_state = STATE_RESTORE.
-    *
-    * RAM chunks (CRAM, BRAM, etc.) are NOT read immediately - only
-    * their file positions are recorded. The actual RAM restore happens
-    * later during the emulation frame when memory_init() reads from
-    * savestate_file.
-    *
-    * DO NOT delete the temp file here! The file must remain until
-    * savestate_restore_finish() closes it (called from m68k_go loop).
-    */
-   restore_state((char *)UAE4ALL_TMP_STATE);
-
-   /* Check if restore was initiated successfully */
-   if (savestate_state == STATE_RESTORE) {
-      /* Restore started - mark temp file for cleanup after it completes */
-      pending_state_cleanup = true;
-
-      /* v048 FIX: Trigger the reset sequence to load RAM chunks!
-       *
-       * CRITICAL: RAM chunks are NOT loaded by restore_state() - only their
-       * file positions are recorded. The actual RAM loading happens in:
-       *   m68k_go() -> if(quit_program>0) -> reset_all_systems()
-       *   -> memory_reset() -> allocate_memory()
-       *
-       * Without this, the if(quit_program > 0) block is NEVER entered and
-       * RAM is NEVER loaded from the file! The game continues with old RAM.
-       */
-      quit_program = 2;
-
+   if (success) {
+      DIAG("retro_unserialize: success");
       return true;
-   } else {
-      /* Restore failed - clean up immediately */
-      remove(UAE4ALL_TMP_STATE);
-      return false;
    }
+
+   DIAG("retro_unserialize: failed");
+   return false;
 }
 
 void *retro_get_memory_data(unsigned id)

@@ -675,6 +675,26 @@ void CIA_reset (void)
  	div10 = 0;
         ciaasdr_unread = 0;
     }
+    else
+    {
+        /* v092 FIX: AGGRESSIVE CIA TIMER RESET after restore!
+         * v090 fix wasn't enough - we need to reset ALL timer values.
+         * This prevents timing desync that causes assertion failures.
+         * Trade-off: timers lose their saved state, but no crash! */
+
+        /* Reset all timer counters to max (stopped state) */
+        ciaata = ciaatb = ciabta = ciabtb = 0xFFFF;
+
+        /* Reset latches */
+        ciaatlatch = ciabtlatch = 0;
+
+        /* Reset div10 counter */
+        div10 = 0;
+
+        /* Synchronize event timing */
+        eventtab[ev_cia].oldcycles = get_cycles ();
+        eventtab[ev_cia].active = 0;  /* Will be set by CIA_calctimers */
+    }
 
     CIA_calctimers ();
     if (! ersatzkickfile) {
@@ -971,7 +991,8 @@ uae_u8 *save_cia (int num, int *len)
     uae_u8 *dstbak,*dst, b;
     uae_u16 t;
 
-    dstbak = dst = (uae_u8 *)malloc (16 + 12 + 1);
+    /* v088: Use arena allocator if available */
+    dstbak = dst = (uae_u8 *)(savestate_use_arena ? savestate_arena_alloc(16+12+1) : malloc(16+12+1));
 
     compute_passed_time ();
 

@@ -1308,10 +1308,14 @@ static void allocate_memory (void)
 
     if (savestate_state == STATE_RESTORE)
     {
-	    fseek (savestate_file, chip_filepos, SEEK_SET);
+	    /* v074: Use savestate_fseek/savestate_fread for SF2000 firmware fs_* */
+	    extern int savestate_fseek(long offset, int whence);
+	    extern size_t savestate_fread(void *buf, size_t size, size_t count);
+
+	    savestate_fseek (chip_filepos, SEEK_SET);
 #ifdef NO_ZLIB
 	    /* No compression - just read directly */
-	    fread (chipmemory, 1, allocated_chipmem, savestate_file);
+	    savestate_fread (chipmemory, 1, allocated_chipmem);
 #else
 #ifndef DREAMCAST
 	    void *tmp=malloc(compressed_size);
@@ -1322,7 +1326,7 @@ static void allocate_memory (void)
 	    int outSize=allocated_chipmem;
 	    int inSize=compressed_size;
 	    int res;
-	    fread (tmp, 1, compressed_size, savestate_file);
+	    savestate_fread (tmp, 1, compressed_size);
 #ifdef USE_LIB7Z
 	    res=Lzma_Decode((Byte *)chipmemory, (size_t *)&outSize, (const Byte *)tmp, (size_t *)&inSize);
 #else
@@ -1338,25 +1342,51 @@ static void allocate_memory (void)
 #endif
 	    {
 		   allocated_chipmem=compressed_size;
-	    	   fseek (savestate_file, chip_filepos, SEEK_SET);
+	    	   savestate_fseek (chip_filepos, SEEK_SET);
 	    }
 #ifdef USE_LIB7Z
 	    if(res != SZ_OK)
 #else
 	    if(res < 0 )
 #endif
-	    fread (chipmemory, 1, allocated_chipmem, savestate_file);
+	    savestate_fread (chipmemory, 1, allocated_chipmem);
 #endif /* NO_ZLIB */
 	    if (allocated_bogomem > 0)
 	    {
-		    fseek (savestate_file, bogo_filepos, SEEK_SET);
-		    fread (bogomemory, 1, allocated_bogomem, savestate_file);
+		    savestate_fseek (bogo_filepos, SEEK_SET);
+		    savestate_fread (bogomemory, 1, allocated_bogomem);
 	    }
     }
 
     chipmem_bank.baseaddr = chipmemory;
     bogomem_bank.baseaddr = bogomemory;
     chipmemory_word=(uae_u16 *)chipmemory;
+}
+
+/* v084: Dedicated function to restore RAM from savestate buffer
+ * Called directly by restore_state_from_buffer() in buffer mode
+ * since memory_reset() is not called in retro_unserialize path */
+void restore_ram_from_savestate(void)
+{
+    extern int savestate_fseek(long offset, int whence);
+    extern size_t savestate_fread(void *buf, size_t size, size_t count);
+
+    write_log("v084: restore_ram_from_savestate: chip_filepos=%ld, bogo_filepos=%ld\n",
+              chip_filepos, bogo_filepos);
+
+    /* Read chip RAM */
+    if (chipmemory && allocated_chipmem > 0 && chip_filepos > 0) {
+        savestate_fseek(chip_filepos, SEEK_SET);
+        savestate_fread(chipmemory, 1, allocated_chipmem);
+        write_log("v084: Restored %d bytes of Chip RAM\n", allocated_chipmem);
+    }
+
+    /* Read bogo RAM (Slow RAM) */
+    if (bogomemory && allocated_bogomem > 0 && bogo_filepos > 0) {
+        savestate_fseek(bogo_filepos, SEEK_SET);
+        savestate_fread(bogomemory, 1, allocated_bogomem);
+        write_log("v084: Restored %d bytes of Bogo RAM\n", allocated_bogomem);
+    }
 }
 
 static void reload_kickstart(void)
@@ -1693,12 +1723,10 @@ uae_u8 *save_rom (int first, int *len)
 	if (mem_size)
 	    break;
     }
-#ifndef DREAMCAST
-    dstbak = dst = (uae_u8 *)malloc (4 + 4 + 4 + 4 + 4 + mem_size);
-#else
-    extern void *uae4all_vram_memory_free;
-    dstbak = dst = (uae_u8 *) uae4all_vram_memory_free;
-#endif
+    /* v078: Use static buffer instead of malloc - SF2000 malloc crashes!
+     * Only need ~40 bytes for metadata (saverom=0, ROM content not saved) */
+    static uae_u8 rom_save_buffer[64];
+    dstbak = dst = rom_save_buffer;
     save_u32 (mem_start);
     save_u32 (mem_size);
     save_u32 (mem_type);
