@@ -1,6 +1,6 @@
 /*
  * Uae4all libretro core input implementation
- * SF2K-UAE v078
+ * SF2K-UAE v097
  * (c) Chips 2021, Grzegorz Korycki 2024
  * v078: DEBUG - return at start of save_state() to find crash
  * v077: Save/Load State using RPATH (same as config) - FIXED path bug
@@ -116,14 +116,14 @@ int sf2000_disk_shuffler_active = 0;  // v055: Disk Shuffler submenu
 int sf2000_settings_active = 0;  // v058: Settings submenu (replaces Details)
 int sf2000_about_active = 0;  // v058: About submenu
 int sf2000_settings_item = 0;  // v058: Selected item in Settings submenu
-#define SF2000_MENU_ITEMS 12  // v069: Disks,FJ1,FJ2,MouseSpd,Skip,Sound,CPU,Y,Floppy,Settings,About,EXIT
+#define SF2000_MENU_ITEMS 15  // v109: Disks,FJ1,FJ2,MouseSpd,Skip,Sound,CPU,PosCorr,Y-Off,Y-Str,ShowLED,Floppy,Settings,About,EXIT
 #define SF2000_MENU_VISIBLE 8  // v036: max visible items at once
 
 // v035: Auto CPU fix - open menu after 3 seconds, toggle CPU, close
 static int sf2000_frame_counter = 0;
 static int sf2000_auto_fix_done = 0;
 static int sf2000_auto_fix_state = 0;  // 0=waiting, 1=menu opened, 2=cpu changed, 3=done
-#define SF2000_AUTO_FIX_FRAMES (60 * 3)  // 60 fps * 3 sec = 3 seconds
+#define SF2000_AUTO_FIX_FRAMES 24  // v120: 0.4 sec (was 3 sec)
 int sf2000_frameskip = 2;
 int sf2000_sound_mode = 1;
 int sf2000_cpu_timing = 2;
@@ -131,7 +131,10 @@ int sf2000_cpu_timing = 2;
 int sf2000_frogjoy1 = 0;  // Main controller -> Port1 Joy (P1) by default
 int sf2000_frogjoy2 = 1;  // Second controller -> Port0 Joy (P2) by default
 int sf2000_y_offset = 0;
+// v101: Position Correction - 0=OFF (v97 method, no offset), 1=ON (new y-offset method)
+int sf2000_pos_correction = 0;  // v103: Default: OFF
 int sf2000_v_stretch = 0;
+int sf2000_show_leds = 1;  // v109: Show LEDs (0=OFF, 1=ON) - default ON
 int sf2000_turbo_floppy = 0;
 // v070: Mouse Speed (index 0-7 = speed 1-8, default index 1 = speed 2)
 int sf2000_mouse_speed = 1;  // Default: speed 2/8
@@ -143,9 +146,14 @@ int sf2000_kickstart = 0;  // Default: Kickstart 1.3
 int sf2000_slowram = 0;    // Default: 0KB
 static const unsigned int slowram_values[] = {0, 0x80000, 0x100000, 0x180000};  // 0KB, 512KB, 1MB, 1.5MB
 extern unsigned prefs_bogomem_size;  // From memory.cpp
+// v111: Chip RAM - 0=512KB, 1=1MB, 2=2MB (default 2MB)
+int sf2000_chipram = 2;    // Default: 2MB
+static const unsigned int chipram_values[] = {0x80000, 0x100000, 0x200000};  // 512KB, 1MB, 2MB
+extern unsigned prefs_chipmem_size;  // From memory.cpp
 // v074: Settings menu items and scrolling (added Save/Load State)
 // v091: Removed Save/Load State from menu (use Y button instead)
-#define SF2000_SETTINGS_ITEMS 6  // Kickstart, SlowRAM, Reset, SaveCfg, DeleteCfg, Back
+// v111: Added Chip RAM option
+#define SF2000_SETTINGS_ITEMS 7  // Kickstart, SlowRAM, ChipRAM, Reset, SaveCfg, DeleteCfg, Back
 #define SF2000_SETTINGS_VISIBLE 5  // Max visible items at once
 static int sf2000_settings_scroll = 0;  // Scroll offset for Settings menu
 
@@ -232,9 +240,10 @@ static int sf2000_save_config(void) {
     // Build config content in buffer
     char buf[512];
     int len = snprintf(buf, sizeof(buf),
-        "# SF2K-UAE Config v073\n"
+        "# SF2K-UAE Config v111\n"
         "kickstart=%d\n"
         "slowram=%d\n"
+        "chipram=%d\n"
         "frameskip=%d\n"
         "sound=%d\n"
         "cpu=%d\n"
@@ -242,9 +251,13 @@ static int sf2000_save_config(void) {
         "frogjoy2=%d\n"
         "turbo_floppy=%d\n"
         "y_offset=%d\n"
-        "mouse_speed=%d\n",
+        "pos_correction=%d\n"
+        "v_stretch=%d\n"
+        "mouse_speed=%d\n"
+        "show_leds=%d\n",
         sf2000_kickstart,
         sf2000_slowram,
+        sf2000_chipram,
         sf2000_frameskip,
         sf2000_sound_mode,
         sf2000_cpu_timing,
@@ -252,7 +265,10 @@ static int sf2000_save_config(void) {
         sf2000_frogjoy2,
         sf2000_turbo_floppy,
         sf2000_y_offset,
-        sf2000_mouse_speed);
+        sf2000_pos_correction,
+        sf2000_v_stretch,
+        sf2000_mouse_speed,
+        sf2000_show_leds);
 
     // Write using firmware function
     ssize_t written = fs_write(fd, buf, len);
@@ -291,6 +307,7 @@ static int sf2000_load_config(void) {
             int val;
             if (sscanf(line, "kickstart=%d", &val) == 1) sf2000_kickstart = val;
             else if (sscanf(line, "slowram=%d", &val) == 1) sf2000_slowram = val;
+            else if (sscanf(line, "chipram=%d", &val) == 1) sf2000_chipram = val;  // v111: Chip RAM
             // v073: fastram removed (didn't work), ignore old configs with fastram
             else if (sscanf(line, "frameskip=%d", &val) == 1) sf2000_frameskip = val;
             else if (sscanf(line, "sound=%d", &val) == 1) sf2000_sound_mode = val;
@@ -299,7 +316,10 @@ static int sf2000_load_config(void) {
             else if (sscanf(line, "frogjoy2=%d", &val) == 1) sf2000_frogjoy2 = val;
             else if (sscanf(line, "turbo_floppy=%d", &val) == 1) sf2000_turbo_floppy = val;
             else if (sscanf(line, "y_offset=%d", &val) == 1) sf2000_y_offset = val;
+            else if (sscanf(line, "pos_correction=%d", &val) == 1) sf2000_pos_correction = val;
+            else if (sscanf(line, "v_stretch=%d", &val) == 1) sf2000_v_stretch = val;
             else if (sscanf(line, "mouse_speed=%d", &val) == 1) sf2000_mouse_speed = val;
+            else if (sscanf(line, "show_leds=%d", &val) == 1) sf2000_show_leds = val;
         }
         line = next;
     }
@@ -392,6 +412,8 @@ static void sf2000_apply_settings(void) {
     PAS = mouse_speed_table[sf2000_mouse_speed];
     // v073: Apply Slow RAM setting (expanded to 1.5MB)
     prefs_bogomem_size = slowram_values[sf2000_slowram];
+    // v111: Apply Chip RAM setting
+    prefs_chipmem_size = chipram_values[sf2000_chipram];
 }
 
 // Convert 4-bit config to joy1dir format
@@ -524,18 +546,25 @@ void sf2000_settings_overlay(char *pixels) {
                 }
                 break;
             case 2:
-                snprintf(buf, sizeof(buf), "%sReset Machine", sel);
+                // v111: Chip RAM (512KB/1MB/2MB)
+                {
+                    const char* chipram_str[] = {"512KB", "1MB", "2MB"};
+                    snprintf(buf, sizeof(buf), "%sChip RAM: %s", sel, chipram_str[sf2000_chipram]);
+                }
                 break;
             case 3:
-                snprintf(buf, sizeof(buf), "%sSave Config", sel);
+                snprintf(buf, sizeof(buf), "%sReset Machine", sel);
                 break;
             case 4:
+                snprintf(buf, sizeof(buf), "%sSave Config", sel);
+                break;
+            case 5:
                 // v070: Delete Config in reddish warning color
                 snprintf(buf, sizeof(buf), "%sDelete Config", sel);
                 col = (sf2000_settings_item == i) ? RGB565(255, 100, 100) : RGB565(200, 80, 80);
                 break;
-            case 5:
-                // v091: Back (was case 7 before removing Save/Load State)
+            case 6:
+                // v111: Back (shifted from case 5)
                 snprintf(buf, sizeof(buf), "%sBack", sel);
                 break;
         }
@@ -571,7 +600,7 @@ void sf2000_about_overlay(char *pixels) {
     y += 12;
 
     // Version
-    Draw_text(pixels, MENU_X + 50, y, MENU_FG, MENU_BG, 1, 1, 30, "SF2K-UAE v078");
+    Draw_text(pixels, MENU_X + 50, y, MENU_FG, MENU_BG, 1, 1, 30, "SF2K-UAE " UAE_VERSION);
     y += MENU_LINE_H;
     Draw_text(pixels, MENU_X + 25, y, MENU_AUTHOR, MENU_BG, 1, 1, 30, "Amiga 500 Emulator");
     y += MENU_LINE_H + 4;
@@ -661,7 +690,7 @@ void sf2000_menu_overlay(char *pixels) {
     char buf[40];
 
     // Title line 1 - cyan (centered)
-    Draw_text(pixels, MENU_X + 55, y, MENU_TITLE, MENU_BG, 1, 1, 30, "SF2K-UAE v078");
+    Draw_text(pixels, MENU_X + 55, y, MENU_TITLE, MENU_BG, 1, 1, 30, "SF2K-UAE " UAE_VERSION);
     y += MENU_LINE_H;
 
     // Title line 2 - gray author
@@ -725,18 +754,47 @@ void sf2000_menu_overlay(char *pixels) {
                 snprintf(buf, sizeof(buf), "%s7.CPU: %d", sel, sf2000_cpu_timing);
                 break;
             case 7:
-                snprintf(buf, sizeof(buf), "%s8.Y-Offset: %d", sel, sf2000_y_offset);
+                // v102: Position Correction toggle (now item 8)
+                snprintf(buf, sizeof(buf), "%s8.PosCorrect: %s", sel, sf2000_pos_correction ? "ON" : "OFF");
                 break;
             case 8:
-                snprintf(buf, sizeof(buf), "%s9.Floppy: %s", sel, turbo_str[sf2000_turbo_floppy]);
+                // v102: Y-Offset (now item 9) - greyed out when PosCorrect is OFF
+                if (sf2000_pos_correction) {
+                    snprintf(buf, sizeof(buf), "%s9.Y-Offset: %d", sel, sf2000_y_offset);
+                } else {
+                    snprintf(buf, sizeof(buf), "%s9.Y-Offset: [---]", sel);
+                    col = 0x8410;  // v102: Gray color when inactive (half brightness)
+                }
                 break;
             case 9:
-                snprintf(buf, sizeof(buf), "%sA.Settings...", sel);
+                // v106: Y-Stretch - multiple levels (OFF/Small/Medium/Large)
+                {
+                    static const char *stretch_str[] = {"OFF", "Small", "Medium", "Large"};
+                    if (sf2000_pos_correction) {
+                        int idx = sf2000_v_stretch;
+                        if (idx < 0) idx = 0;
+                        if (idx > 3) idx = 3;
+                        snprintf(buf, sizeof(buf), "%sA.Y-Stretch: %s", sel, stretch_str[idx]);
+                    } else {
+                        snprintf(buf, sizeof(buf), "%sA.Y-Stretch: [---]", sel);
+                        col = 0x8410;
+                    }
+                }
                 break;
             case 10:
-                snprintf(buf, sizeof(buf), "%sB.About...", sel);
+                // v109: Show LEDs option
+                snprintf(buf, sizeof(buf), "%sB.Show LEDs: %s", sel, sf2000_show_leds ? "ON" : "OFF");
                 break;
             case 11:
+                snprintf(buf, sizeof(buf), "%sC.Floppy: %s", sel, turbo_str[sf2000_turbo_floppy]);
+                break;
+            case 12:
+                snprintf(buf, sizeof(buf), "%sD.Settings...", sel);
+                break;
+            case 13:
+                snprintf(buf, sizeof(buf), "%sE.About...", sel);
+                break;
+            case 14:
                 snprintf(buf, sizeof(buf), "%s0.EXIT", sel);
                 break;
         }
@@ -863,6 +921,7 @@ static void sf2000_handle_menu_input(void) {
                 switch (sf2000_settings_item) {
                     case 0: if (sf2000_kickstart > 0) sf2000_kickstart--; else sf2000_kickstart = 2; break;  // Kickstart
                     case 1: if (sf2000_slowram > 0) sf2000_slowram--; else sf2000_slowram = 3; break;  // v073: Slow RAM cycle
+                    case 2: if (sf2000_chipram > 0) sf2000_chipram--; else sf2000_chipram = 2; break;  // v111: Chip RAM cycle
                 }
                 s_delay = 8;
             }
@@ -870,14 +929,16 @@ static void sf2000_handle_menu_input(void) {
                 switch (sf2000_settings_item) {
                     case 0: if (sf2000_kickstart < 2) sf2000_kickstart++; else sf2000_kickstart = 0; break;  // Kickstart
                     case 1: if (sf2000_slowram < 3) sf2000_slowram++; else sf2000_slowram = 0; break;  // v073: Slow RAM cycle
+                    case 2: if (sf2000_chipram < 2) sf2000_chipram++; else sf2000_chipram = 0; break;  // v111: Chip RAM cycle
                 }
                 s_delay = 8;
             }
             // A - select action
             if (cur_a && !s_prev_a) {
                 switch (sf2000_settings_item) {
-                    case 2:  // Reset Machine (applies Kickstart change) - v073: shifted back
+                    case 3:  // Reset Machine (applies Kickstart/RAM changes) - v111: shifted
                         update_romfile_for_kickstart();  // Update ROM path before reset
+                        prefs_chipmem_size = chipram_values[sf2000_chipram];  // v111: Apply Chip RAM
                         uae_reset();
                         sf2000_set_feedback("Reset with new settings!");
                         sf2000_settings_active = 0;
@@ -885,14 +946,14 @@ static void sf2000_handle_menu_input(void) {
                         pauseg = 0;
                         menu_first_frame = 1;
                         break;
-                    case 3:  // Save Config - v073: shifted back
+                    case 4:  // Save Config - v111: shifted
                         if (sf2000_save_config()) {
                             sf2000_set_feedback("Config saved!");
                         } else {
                             sf2000_set_feedback("Save FAILED!");
                         }
                         break;
-                    case 4:  // v070: Delete Config - v073: shifted back
+                    case 5:  // v070: Delete Config - v111: shifted
                         {
                             char path[256];
                             get_config_path(path, sizeof(path));
@@ -906,7 +967,7 @@ static void sf2000_handle_menu_input(void) {
                             }
                         }
                         break;
-                    case 5:  // v091: Back (was case 7, Save/Load State removed from menu)
+                    case 6:  // v111: Back (shifted from case 5)
                         sf2000_settings_active = 0;
                         sf2000_settings_item = 0;
                         sf2000_settings_scroll = 0;
@@ -962,15 +1023,21 @@ static void sf2000_handle_menu_input(void) {
         if (cur_up && !prev_up) {
             sf2000_menu_item--;
             if (sf2000_menu_item < 0) sf2000_menu_item = SF2000_MENU_ITEMS - 1;
+            // v105: Skip Y-Stretch (item 9) and Y-Offset (item 8) when PosCorrect is OFF
+            if (sf2000_menu_item == 9 && !sf2000_pos_correction) sf2000_menu_item--;
+            if (sf2000_menu_item == 8 && !sf2000_pos_correction) sf2000_menu_item--;
             menu_delay = 8;
         }
         // DOWN - next item
         if (cur_down && !prev_down) {
             sf2000_menu_item++;
             if (sf2000_menu_item >= SF2000_MENU_ITEMS) sf2000_menu_item = 0;
+            // v105: Skip Y-Offset (item 8) and Y-Stretch (item 9) when PosCorrect is OFF
+            if (sf2000_menu_item == 8 && !sf2000_pos_correction) sf2000_menu_item++;
+            if (sf2000_menu_item == 9 && !sf2000_pos_correction) sf2000_menu_item++;
             menu_delay = 8;
         }
-        // LEFT - decrease value (v069: added Mouse Speed at case 3)
+        // LEFT - decrease value (v101: added Position Correction at case 8)
         if (cur_left && !prev_left) {
             switch (sf2000_menu_item) {
                 case 0: break;  // Disks submenu - opens via A
@@ -984,16 +1051,23 @@ static void sf2000_handle_menu_input(void) {
                 case 4: if (sf2000_frameskip > 0) sf2000_frameskip--; break;
                 case 5: if (sf2000_sound_mode > 0) sf2000_sound_mode--; break;
                 case 6: if (sf2000_cpu_timing > 1) sf2000_cpu_timing--; break;
-                case 7: if (sf2000_y_offset > -50) sf2000_y_offset -= 5; break;
-                case 8: if (sf2000_turbo_floppy > 0) sf2000_turbo_floppy--; break;
-                case 9: break;  // Settings submenu - opens via A
-                case 10: break;  // About submenu - opens via A
-                case 11: break;  // EXIT
+                case 7: sf2000_pos_correction = !sf2000_pos_correction; break;  // v102: PosCorrect toggle
+                case 8:  // v104: Y-Offset range 0-48
+                    if (sf2000_pos_correction && sf2000_y_offset > 0) sf2000_y_offset -= 5;
+                    break;
+                case 9:  // v106: Y-Stretch cycle (0=OFF, 1=Small, 2=Medium, 3=Large)
+                    if (sf2000_pos_correction && sf2000_v_stretch > 0) sf2000_v_stretch--;
+                    break;
+                case 10: sf2000_show_leds = !sf2000_show_leds; break;  // v109: Show LEDs toggle
+                case 11: if (sf2000_turbo_floppy > 0) sf2000_turbo_floppy--; break;
+                case 12: break;  // Settings submenu - opens via A
+                case 13: break;  // About submenu - opens via A
+                case 14: break;  // EXIT
             }
             sf2000_apply_settings();
             menu_delay = 8;
         }
-        // RIGHT - increase value (v069: added Mouse Speed at case 3)
+        // RIGHT - increase value (v101: added Position Correction at case 8)
         if (cur_right && !prev_right) {
             switch (sf2000_menu_item) {
                 case 0: break;  // Disks submenu - opens via A
@@ -1007,31 +1081,38 @@ static void sf2000_handle_menu_input(void) {
                 case 4: if (sf2000_frameskip < 5) sf2000_frameskip++; break;
                 case 5: if (sf2000_sound_mode < 2) sf2000_sound_mode++; break;
                 case 6: if (sf2000_cpu_timing < 8) sf2000_cpu_timing++; break;
-                case 7: if (sf2000_y_offset < 50) sf2000_y_offset += 5; break;
-                case 8: if (sf2000_turbo_floppy < 4) sf2000_turbo_floppy++; break;
-                case 9: break;  // Settings submenu - opens via A
-                case 10: break;  // About submenu - opens via A
-                case 11: break;  // EXIT
+                case 7: sf2000_pos_correction = !sf2000_pos_correction; break;  // v102: PosCorrect toggle
+                case 8:  // v104: Y-Offset range 0-48
+                    if (sf2000_pos_correction && sf2000_y_offset < 48) sf2000_y_offset += 5;
+                    break;
+                case 9:  // v106: Y-Stretch cycle (0=OFF, 1=Small, 2=Medium, 3=Large)
+                    if (sf2000_pos_correction && sf2000_v_stretch < 3) sf2000_v_stretch++;
+                    break;
+                case 10: sf2000_show_leds = !sf2000_show_leds; break;  // v109: Show LEDs toggle
+                case 11: if (sf2000_turbo_floppy < 4) sf2000_turbo_floppy++; break;
+                case 12: break;  // Settings submenu - opens via A
+                case 13: break;  // About submenu - opens via A
+                case 14: break;  // EXIT
             }
             sf2000_apply_settings();
             menu_delay = 8;
         }
-        // A - confirm / exit / open submenus (v069: indices shifted +1 due to Mouse Speed)
+        // A - confirm / exit / open submenus (v109: indices shifted +1 due to Show LEDs)
         if (cur_a && !prev_a) {
             if (sf2000_menu_item == 0) {  // Disk Shuffler
                 sf2000_disk_shuffler_active = 1;
                 details_entry_delay = 15;
                 menu_delay = 15;
-            } else if (sf2000_menu_item == 9) {  // Settings
+            } else if (sf2000_menu_item == 12) {  // Settings
                 sf2000_settings_active = 1;
                 sf2000_settings_item = 0;
                 details_entry_delay = 15;
                 menu_delay = 15;
-            } else if (sf2000_menu_item == 10) {  // About
+            } else if (sf2000_menu_item == 13) {  // About
                 sf2000_about_active = 1;
                 details_entry_delay = 15;
                 menu_delay = 15;
-            } else if (sf2000_menu_item == 11) {  // EXIT
+            } else if (sf2000_menu_item == 14) {  // EXIT
                 sf2000_menu_active = 0;
                 pauseg = 0;
                 menu_first_frame = 1;
@@ -1816,18 +1897,18 @@ int Retro_PollEvent()
         buttonstate[0] = mmbL;  // L = LMB
         buttonstate[2] = mmbR;  // R = RMB
 
-        // v073: Handle FrogJoy1 mouse mode (controller 0) - A=RMB, B=LMB
+        // v139: Handle FrogJoy1 mouse mode (controller 0) - A=LMB, B=RMB
         if (sf2000_frogjoy1 == 2) {
-            // FrogJoy1 = Mouse mode: D-pad controls mouse, B=LMB, A=RMB
-            buttonstate[0] |= fire_b_0;  // B = LMB
-            buttonstate[2] |= fire_a_0;  // A = RMB
+            // FrogJoy1 = Mouse mode: D-pad controls mouse, A=LMB, B=RMB
+            buttonstate[0] |= fire_a_0;  // A = LMB
+            buttonstate[2] |= fire_b_0;  // B = RMB
         }
 
-        // v073: Handle FrogJoy2 mouse mode (controller 1) - A=RMB, B=LMB
+        // v139: Handle FrogJoy2 mouse mode (controller 1) - A=LMB, B=RMB
         if (sf2000_frogjoy2 == 2) {
-            // FrogJoy2 = Mouse mode: D-pad controls mouse, B=LMB, A=RMB
-            buttonstate[0] |= fire_b_1;  // B = LMB
-            buttonstate[2] |= fire_a_1;  // A = RMB
+            // FrogJoy2 = Mouse mode: D-pad controls mouse, A=LMB, B=RMB
+            buttonstate[0] |= fire_a_1;  // A = LMB
+            buttonstate[2] |= fire_b_1;  // B = RMB
         }
 
         // Handle FrogJoy1 joystick modes

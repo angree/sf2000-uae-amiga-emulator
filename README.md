@@ -6,10 +6,7 @@ Based on uae4all-rpi by Chips-fr, ported to SF2000/GB300 multicore framework.
 
 ## Downloads
 
-| Platform | File | Size |
-|----------|------|------|
-| SF2000 | `releases/uae4all058_sf2000.zip` | ~495 KB |
-| GB300 | `releases/uae4all058_gb300.zip` | ~495 KB |
+Download from [GitHub Releases](https://github.com/angree/sf2000-uae-amiga-emulator/releases)
 
 ## Installation
 
@@ -53,6 +50,33 @@ Kickstart 1.3 recommended for best compatibility.
 | SELECT | Toggle virtual keyboard |
 | START | Open menu |
 
+## Mouse Mode
+
+Hold **L+R for 3 seconds** to toggle mouse mode.
+
+| Button | Action |
+|--------|--------|
+| D-Pad | Move mouse cursor |
+| A | Left Mouse Button (LMB) |
+| B | Right Mouse Button (RMB) |
+
+Mouse speed adjustable in Settings menu (1-8).
+
+## Save States
+
+Save and load states are working. Loading saves made in interlace mode is not supported.
+
+## Display Options
+
+| Option | Description |
+|--------|-------------|
+| Y-Correction | Shifts display vertically (-20 to +20 pixels) |
+| Y-Stretch | Stretches image vertically (0-40 pixels) |
+
+## Splash Screen
+
+Animated splash screen at startup ensures proper audio initialization before gameplay.
+
 ## Multi-Disk Games
 
 For multi-disk games, name your ADF files with disk number:
@@ -92,9 +116,10 @@ The **only difference** is the final linking step, which uses platform-specific:
 
 ## Known Issues
 
-- Some AGA games may not work (this is an OCS/ECS emulator)
+- AGA games will not work (this is an OCS emulator)
 - CPU speed auto-fix activates after 3 seconds on first load
 - Virtual keyboard layout is basic
+- Loading saves made in interlace mode not supported
 
 ## Credits
 
