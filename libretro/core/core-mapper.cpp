@@ -79,6 +79,7 @@ extern "C" ssize_t fs_write(int fd, const void *buf, size_t count);
 extern "C" ssize_t fs_read(int fd, void *buf, size_t count);
 extern "C" int fs_close(int fd);
 extern "C" int fs_sync(const char *path);
+extern "C" int fs_mkdir(const char *path, int mode);  // v140: Create directory
 
 // Firmware file flags (from stockfw.h)
 #define FS_O_RDONLY 0x0000
@@ -211,27 +212,38 @@ static void update_romfile_for_kickstart(void) {
     romfile[63] = '\0';
 }
 
-// v067: Per-game config - same folder as ROM, with .cfg extension
-// Example: /mnt/sda1/ROMS/amiga/Lotus2.adf -> /mnt/sda1/ROMS/amiga/Lotus2.cfg
-static void get_config_path(char* path, int size) {
-    // Copy RPATH and replace extension with .cfg
-    strncpy(path, RPATH, size - 5);  // Leave room for .cfg\0
-    path[size - 5] = '\0';
+// v140: Per-game config in dedicated folder
+// Example: /mnt/sda1/ROMS/amiga/Lotus2.adf -> /mnt/sda1/cores/config/uae4all/Lotus2.cfg
+#define UAE_CONFIG_DIR "/mnt/sda1/cores/config/uae4all"
 
-    // Find last dot
+static void get_config_path(char* path, int size) {
+    // Extract game name from RPATH (last path component without extension)
+    const char* filename = strrchr(RPATH, '/');
+    if (filename) {
+        filename++;  // Skip the '/'
+    } else {
+        filename = RPATH;  // No path separator, use whole string
+    }
+
+    // Build path: /mnt/sda1/cores/config/uae4all/GameName.cfg
+    snprintf(path, size, "%s/%s", UAE_CONFIG_DIR, filename);
+
+    // Replace extension with .cfg
     char* dot = strrchr(path, '.');
-    if (dot) {
+    if (dot && dot > strrchr(path, '/')) {
         strcpy(dot, ".cfg");
     } else {
-        // No extension - just append .cfg
         strncat(path, ".cfg", size - strlen(path) - 1);
     }
 }
 
-// v067: Save per-game config using DIRECT firmware fs_* calls
+// v140: Save per-game config using DIRECT firmware fs_* calls
 static int sf2000_save_config(void) {
     char path[256];
     get_config_path(path, sizeof(path));
+
+    // v140: Ensure config directory exists
+    fs_mkdir(UAE_CONFIG_DIR, 0755);
 
     // v061: Use firmware fs_open directly - this is what xlog uses internally
     int fd = fs_open(path, FS_O_WRONLY | FS_O_CREAT | FS_O_TRUNC, 0666);

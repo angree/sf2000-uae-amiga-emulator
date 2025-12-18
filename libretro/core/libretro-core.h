@@ -1,7 +1,7 @@
 #ifndef LIBRETRO_CORE_H
 #define LIBRETRO_CORE_H 1
 
-#define UAE_VERSION "v139"
+#define UAE_VERSION "v140"
 
 #include <stdint.h>
 #include <string.h>
