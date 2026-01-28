@@ -1,12 +1,62 @@
 /*
  * Uae4all libretro core implementation
  * (c) Chips 2022
+ *
+ * v157: Test - NO menu patch, but using our linker script
  */
 
 #include "libretro.h"
 #include "libretro-core.h"
 
 #include "sf2000_diag.h"
+
+/* ============================================================
+ * v157: MENU PATCH DISABLED FOR TESTING
+ * Testing if our linker script alone causes the freeze
+ * ============================================================ */
+#if 0  /* DISABLED FOR v157 TEST */
+#ifdef SF2000
+
+/* MIPS instruction encoding macros */
+#define MIPS_JAL(pfunc)  ((3 << 26) | ((uint32_t)(pfunc) >> 2 & ((1 << 26) - 1)))
+#define PATCH_JAL(target, hook)  (*(uint32_t*)(target) = MIPS_JAL(hook))
+
+/* External firmware symbols - defined in linker script */
+extern "C" {
+    extern char jal_run_emulator_menu;      /* Address of JAL instruction to patch */
+    extern int run_emulator_menu(void);     /* Original menu function */
+    extern void os_disable_interrupt(void); /* Firmware interrupt control */
+    extern void os_enable_interrupt(void);
+}
+
+/* Flag to ensure we only patch once */
+static int menu_patch_applied = 0;
+
+/* Wrapper function - intercepts menu quit to prevent crash */
+extern "C" int uae_menu_wrapper(void) {
+    int result = run_emulator_menu();
+    /* When user presses "quit" (result=1), return 0 instead to prevent crash */
+    if (result == 1) {
+        return 0;  /* Don't quit - just return to game */
+    }
+    return result;
+}
+
+/* Apply the menu patch - call once at startup */
+static void apply_menu_patch(void) {
+    if (menu_patch_applied) return;
+
+    os_disable_interrupt();
+    PATCH_JAL((uintptr_t)&jal_run_emulator_menu, uae_menu_wrapper);
+    __builtin___clear_cache(&jal_run_emulator_menu, &jal_run_emulator_menu + 4);
+    os_enable_interrupt();
+
+    menu_patch_applied = 1;
+}
+
+#endif /* SF2000 */
+#endif /* DISABLED */
+/* ============================================================ */
 
 #include "uae.h"
 
@@ -20,7 +70,7 @@
 
 #include "savestate.h"
 
-#include "splash_logo.h"  /* v137: Splash screen logo */
+/* v158: splash_logo.h removed - no pre-boot */
 
 #ifndef NO_ZLIB
 #include "zlib.h"
@@ -465,6 +515,13 @@ void retro_init(void)
 {
    DIAG("1.retro_init");
 
+/* v157: Menu patch DISABLED for testing
+#ifdef SF2000
+   DIAG("1a.MENU_PATCH");
+   apply_menu_patch();
+#endif
+*/
+
    const char *system_dir = NULL;
 
    msg_interface_version = 0;
@@ -805,42 +862,22 @@ bool retro_load_game(const struct retro_game_info *info)
 
    quit_program = 2;
 
-   /* v137: WARMUP LOOP - Boot Amiga behind splash screen
-    * This runs BEFORE retro_run() is ever called, so Start+Select menu is blocked!
-    * After 350 frames (~7 sec), reset Amiga for proper audio initialization.
+   /* v159: WARMUP LOOP - NO GRAPHICS, 6 sec (300 frames)
+    * Just run Amiga in background, no splash screen displayed
     */
    {
-       #define V137_WARMUP_FRAMES 350
-       static uint16_t splash_buffer[320 * 240];
+       #define V159_WARMUP_FRAMES 300  /* ~6 sec (was 350 = ~7 sec) */
 
-       for (int frame = 0; frame < V137_WARMUP_FRAMES; frame++) {
-           /* 1. Copy logo to splash buffer */
-           for (int i = 0; i < 320 * 240; i++) {
-               splash_buffer[i] = splash_logo_data[i];
-           }
-
-           /* 2. Draw blue progress bar at top (12px high, full 320px width) */
-           int progress_width = (frame * 320) / V137_WARMUP_FRAMES;
-           if (progress_width > 319) progress_width = 319;
-           for (int y = 0; y < 12; y++) {
-               for (int x = 0; x < progress_width; x++) {
-                   splash_buffer[y * 320 + x] = 0x001F;  /* Blue RGB565 */
-               }
-           }
-
-           /* 3. Show splash screen */
-           video_cb(splash_buffer, retrow, retroh, retrow << PIXEL_BYTES);
-
-           /* 4. Run Amiga one frame in background */
+       for (int frame = 0; frame < V159_WARMUP_FRAMES; frame++) {
+           /* Run Amiga one frame */
            if (pauseg == 0) {
                m68k_go(1);
            }
-
-           /* 5. Flush audio */
+           /* Flush audio */
            flush_audio();
        }
 
-       /* 6. Reset Amiga after warmup - audio will be properly initialized */
+       /* Reset Amiga after warmup - audio will be properly initialized */
        uae_reset();
    }
 

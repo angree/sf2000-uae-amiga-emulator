@@ -1342,7 +1342,7 @@ bool restore_state_from_buffer(const void *buffer, size_t size)
      * ═══════════════════════════════════════════════════════════════════════ */
 
     /* ═══════════════════════════════════════════════════════════════════════
-     * v152: HYBRID APPROACH - Best of v140 + v145!
+     * v153: HYBRID APPROACH - Best of v140 + v145!
      * ═══════════════════════════════════════════════════════════════════════
      *
      * PROBLEM:
@@ -1361,44 +1361,44 @@ bool restore_state_from_buffer(const void *buffer, size_t size)
     static int load_count = 0;
     load_count++;
 
-    write_log("v152: HYBRID RESTORE - load #%d\n", load_count);
+    write_log("v153: HYBRID RESTORE - load #%d\n", load_count);
 
     /* ALWAYS do reset_drawing() - this is common to both v140 and v145 */
     reset_drawing();
-    write_log("v152: reset_drawing() called\n");
+    write_log("v153: reset_drawing() called\n");
 
     if (load_count == 1) {
         /* ═══ 1st LOAD: Use v145 method (full reinit) ═══ */
-        write_log("v152: 1st load - using v145 FULL REINIT method\n");
+        write_log("v153: 1st load - using v145 FULL REINIT method\n");
 
         /* v145: init_hardware_frame - resets line tracking vars */
         init_hardware_frame_wrapper();
-        write_log("v152: init_hardware_frame() called\n");
+        write_log("v153: init_hardware_frame() called\n");
 
         /* v143: Reset DIW state machine */
         *get_diwstate_ptr() = DIW_waiting_start;
         *get_hdiwstate_ptr() = DIW_waiting_start;
-        write_log("v152: diwstate reset to waiting_start\n");
+        write_log("v153: diwstate reset to waiting_start\n");
 
         /* v144: BPLCON0 reinit trick */
         reinit_bplcon0_after_restore();
-        write_log("v152: BPLCON0 reinit called\n");
+        write_log("v153: BPLCON0 reinit called\n");
 
         /* v143: Recalculate display window */
         calcdiw_wrapper();
-        write_log("v152: calcdiw() called\n");
+        write_log("v153: calcdiw() called\n");
 
         /* v143: Reinitialize sprite resolution */
         expand_sprres_wrapper();
-        write_log("v152: expand_sprres() called\n");
+        write_log("v153: expand_sprres() called\n");
 
     } else {
         /* ═══ 2nd+ LOAD: Use v140 method (minimal) ═══ */
-        write_log("v152: load #%d - using v140 MINIMAL method (only reset_drawing)\n", load_count);
+        write_log("v153: load #%d - using v140 MINIMAL method (only reset_drawing)\n", load_count);
         /* Nothing else! Just reset_drawing() which was already called above */
     }
 
-    write_log("v152: ═══ RESTORE COMPLETE (load #%d) ═══\n", load_count);
+    write_log("v153: ═══ RESTORE COMPLETE (load #%d) ═══\n", load_count);
 
     return true;
 }
