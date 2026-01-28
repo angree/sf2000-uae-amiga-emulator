@@ -116,9 +116,29 @@ The **only difference** is the final linking step, which uses platform-specific:
 - AGA games will not work (this is an OCS emulator)
 - Loading saves made in interlace mode not supported
 
+## License
+
+This program is free software; you can redistribute it and/or modify it under the terms of the **GNU General Public License version 2** as published by the Free Software Foundation.
+
+See [LICENSE](LICENSE) file for details.
+
 ## Credits
 
-- Original uae4all by Chui, john4p, TomB, notaz
-- Raspberry Pi port by Chips-fr
-- SF2000/GB300 port for multicore framework
+This emulator is based on a long chain of open source projects:
+
+**Original UAE (Unix Amiga Emulator)**
+- Bernd Schmidt and the UAE Team
+- https://github.com/bernds/UAE
+
+**UAE4ALL**
+- Chui, john4p, TomB, notaz
+- Dreamcast/GP2X/Wii ports
+
+**UAE4ALL with FAME/C**
+- Chips (Raspberry Pi port)
+- https://github.com/AnotherBrowser/uae4all
+
+**SF2000/GB300 Port**
+- angree (2024-2025)
+- SF2000/GB300 multicore framework integration
 - Retro Handheld Discord community
